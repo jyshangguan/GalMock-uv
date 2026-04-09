@@ -63,10 +63,11 @@ A full example is in `demo/config.toml`.
 
 ### Step 2 — Run Layer A (DysmalPy environment)
 
-Build the intrinsic CO cube:
+Build the intrinsic CO cube.  `conda run` does not work on this system;
+use the shell hook to activate the environment:
 
 ```bash
-python galmockuv.py config.toml --layers A
+eval "$(/home/shangguan/Softwares/miniconda3/bin/conda shell.bash hook)" && conda activate alma && python galmockuv.py config.toml --layers A
 ```
 
 Or programmatically:
@@ -82,10 +83,17 @@ Output: `intrinsic_cube.fits` (FITS cube with frequency axis),
 
 ### Step 3 — Run Layers B+C (CASA environment)
 
-Simulate ALMA observation and measure:
+Simulate ALMA observation and measure.  The naive `exec(open(...).read())`
+fails because `__file__` and `argparse` are not defined in the exec scope.
+Pass an explicit globals dict:
 
 ```bash
-casa --nologger --nogui -c "exec(open('galmockuv.py').read())" config.toml --layers B+C
+casa --nologger --nogui -c "
+import sys, argparse, pathlib
+sys.argv = ['galmockuv.py', 'config.toml', '--layers', 'B+C']
+galmockuv_globals = {'__name__': '__main__', '__file__': 'galmockuv.py', 'sys': sys, 'argparse': argparse, 'pathlib': pathlib, '__builtins__': __builtins__}
+exec(open('galmockuv.py').read(), galmockuv_globals)
+"
 ```
 
 Or programmatically (inside CASA):
@@ -116,11 +124,18 @@ print(f"f_eff      = {meas['f_eff']:.3f}")
 
 ### Step 5 — Generate report plots (optional)
 
-Requires only `numpy`, `matplotlib`, `astropy`, `scipy` (no CASA/DysmalPy):
+Requires CASA environment (uses `casatools.ms` for visibility data and
+`galmockuv.casa_utils` for UV fitting):
 
 ```bash
-python demo/generate_report_plots.py
+casa --nologger --nogui -c "
+import sys, pathlib
+exec(open('demo/generate_report_plots.py').read(), {'__name__': '__main__', '__file__': 'demo/generate_report_plots.py', '__builtins__': __builtins__, 'sys': sys, 'pathlib': pathlib})
+"
 ```
+
+Plots are saved to `demo/figs/` (git-tracked).  Pipeline data (JSON, CL)
+stays in the output directory (git-ignored).
 
 Produces 4 figures: `intrinsic_summary.png`, `visibility_data.png`,
 `cleaned_summary.png`, `uv_amplitude_fit.png`.
@@ -188,6 +203,8 @@ is large and the measurement may be a lower limit.
 
 ## Output Files
 
+### Pipeline data (in output directory, git-ignored)
+
 | File | Description |
 |------|-------------|
 | `intrinsic_cube.fits` | Intrinsic CO cube (nchan, ny, nx) |
@@ -196,6 +213,13 @@ is large and the measurement may be a lower limit.
 | `casa_sim_params.yaml` | CASA simulation parameters used |
 | `measurements.json` | FWHM, size, mass, f_eff |
 | `measurement_details.yaml` | Full measurement details |
+| `report_data.json` | Key numbers extracted by plotting script |
+| `uvfit_report.cl` | CASA component list from UV model fit |
+
+### Report figures (in `demo/figs/`, git-tracked)
+
+| File | Description |
+|------|-------------|
 | `intrinsic_summary.png` | Moment 0/1/2 + spectrum (intrinsic) |
 | `visibility_data.png` | Visibility amplitudes + uv-coverage |
 | `cleaned_summary.png` | Moment 0/1/2 + spectrum (cleaned) |
@@ -207,15 +231,58 @@ A complete working demo is in `demo/`:
 
 ```bash
 # Layer A (DysmalPy env)
-python galmockuv.py demo/config.toml --layers A
+eval "$(/home/shangguan/Softwares/miniconda3/bin/conda shell.bash hook)" && conda activate alma && python galmockuv.py demo/config.toml --layers A
 
 # Layers B+C (CASA env)
-casa --nologger --nogui -c "exec(open('galmockuv.py').read())" demo/config.toml --layers B+C
+casa --nologger --nogui -c "
+import sys, argparse, pathlib
+sys.argv = ['galmockuv.py', 'demo/config.toml', '--layers', 'B+C']
+galmockuv_globals = {'__name__': '__main__', '__file__': 'galmockuv.py', 'sys': sys, 'argparse': argparse, 'pathlib': pathlib, '__builtins__': __builtins__}
+exec(open('galmockuv.py').read(), galmockuv_globals)
+"
 
-# Report plots (standard Python)
-python demo/generate_report_plots.py
+# Report plots (CASA env)
+casa --nologger --nogui -c "
+import sys, pathlib
+exec(open('demo/generate_report_plots.py').read(), {'__name__': '__main__', '__file__': 'demo/generate_report_plots.py', '__builtins__': __builtins__, 'sys': sys, 'pathlib': pathlib})
+"
 ```
 
-Demo config: z=2.5 galaxy, Mbar=10^10.62, Mhalo=10^12, 45 deg inclination,
-ALMA C43-2, 600s integration.  Expected results: FWHM ~296 km/s, SNR ~15,
-size ~14.9 kpc, f_eff ~0.14.
+Demo config: z=2.5 galaxy, Mbar=10^10.62, Mhalo=10^12, 3 kpc disk,
+45 deg inclination, ALMA C43-2, 600s integration.  Expected results:
+FWHM ~302 km/s, SNR ~12, size ~6.6 kpc, f_eff ~0.30.
+
+## Troubleshooting
+
+### `conda run` fails with `__conda_exe` not found
+
+Use the shell hook instead:
+
+```bash
+eval "$(/home/shangguan/Softwares/miniconda3/bin/conda shell.bash hook)" && conda activate alma
+```
+
+### `exec(open('galmockuv.py').read())` fails in CASA
+
+`exec()` does not define `__file__`, `argparse`, or `sys` in the exec'd
+code's namespace.  Pass them explicitly in a globals dict (see Step 3 above).
+
+### DysmalPy segfaults on import (erfa/pyerfa conflict)
+
+If `import dysmalpy` segfaults in `erfa.core.epj2jd`, the `pyerfa` package
+may need reinstalling:
+
+```bash
+pip install --force-reinstall --no-deps pyerfa
+```
+
+### scipy `_spropack` import error
+
+If `from scipy.sparse.linalg._propack import _spropack` fails, the scipy
+install may be corrupted (e.g. from a numpy major version mismatch during
+`pip install --force-reinstall scipy`).  Fix by reinstalling both in the
+correct order:
+
+```bash
+pip install 'numpy<2.0.0' 'scipy<1.14'
+```
