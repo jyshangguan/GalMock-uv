@@ -15,7 +15,7 @@ All outputs are in `demo/output/z25_demo/`.
 | Redshift | 2.5 | |
 | Total baryonic mass | 4.17 × 10<sup>10</sup> M<sub>☉</sub> | log = 10.62 |
 | NFW halo mass | 10<sup>12</sup> M<sub>☉</sub> | *c* = 5 |
-| Disk effective radius | 8 kpc | Sérsic *n* = 1 (exponential) |
+| Disk effective radius | 3 kpc | Sérsic *n* = 1 (exponential) |
 | Inclination | 45° | |
 | Position angle | 30° | |
 | Velocity dispersion | 30 km/s | Constant, isotropic |
@@ -46,11 +46,11 @@ The galaxy is modeled as a rotating exponential disk embedded in an NFW dark mat
 
 ### Results
 
-The intrinsic cube produces a line FWHM of **306 km/s**, reflecting the combined rotational broadening (8 kpc disk at 45° inclination) and turbulent dispersion.
+The intrinsic cube produces a line FWHM of **308 km/s**, reflecting the combined rotational broadening (3 kpc disk at 45° inclination) and turbulent dispersion.
 
-![Intrinsic cube summary — moment 0, moment 1, moment 2, and integrated spectrum with Gaussian fit.](output/z25_demo/intrinsic_summary.png)
+![Intrinsic cube summary — moment 0, moment 1, moment 2, and integrated spectrum with Gaussian fit.](figs/intrinsic_summary.png)
 
-**Figure 1.** Intrinsic model diagnostics. *Top-left:* Moment-0 (integrated CO flux) showing an extended disk. *Top-right:* Moment-1 velocity field revealing the rotation pattern (spider diagram). *Bottom-left:* Moment-2 velocity dispersion showing elevated central dispersion from rotation shear. *Bottom-right:* Integrated spectrum with Gaussian fit, FWHM = 306 km/s.
+**Figure 1.** Intrinsic model diagnostics. *Top-left:* Moment-0 (integrated CO flux) showing a compact disk. *Top-right:* Moment-1 velocity field revealing the rotation pattern (spider diagram). *Bottom-left:* Moment-2 velocity dispersion showing elevated central dispersion from rotation shear. *Bottom-right:* Integrated spectrum with Gaussian fit, FWHM = 308 km/s.
 
 ---
 
@@ -62,9 +62,9 @@ CASA `simobserve` converts the intrinsic cube into a simulated MeasurementSet us
 
 ### Results
 
-The resulting MS is 681 MB. The uv-coverage extends to ~89 kλ, giving a synthesized beam of ~3″ with natural weighting.
+The resulting MS is 681 MB. The uv-coverage extends to ~89 kλ, giving a synthesized beam of ~3.1″ with natural weighting.
 
-![Visibility data — real part vs uv-distance (left) and uv coordinate distribution (right).](output/z25_demo/visibility_data.png)
+![Visibility data — real part vs uv-distance (left) and uv coordinate distribution (right).](figs/visibility_data.png)
 
 **Figure 2.** Simulated visibility data. *Left:* Real part of channel-averaged visibilities vs uv-distance. The amplitude decreases with baseline length as the source becomes resolved. *Right:* uv coordinate distribution showing the C43-2 baseline coverage.
 
@@ -80,13 +80,13 @@ The MS is imaged with CASA `tclean` (natural weighting, 1000 iterations). The FW
 
 ### Results
 
-![Cleaned image moments and spectrum.](output/z25_demo/cleaned_summary.png)
+![Cleaned image moments and spectrum.](figs/cleaned_summary.png)
 
-**Figure 3.** Cleaned image diagnostics. *Top-left:* Moment-0 of the deconvolved cube. *Top-right:* Moment-1 velocity field (noisier than the intrinsic map in Figure 1). *Bottom-left:* Moment-2 dispersion map. *Bottom-right:* Cleaned integrated spectrum with Gaussian fit, FWHM = 295.6 ± 10.2 km/s.
+**Figure 3.** Cleaned image diagnostics. *Top-left:* Moment-0 of the deconvolved cube. *Top-right:* Moment-1 velocity field (noisier than the intrinsic map in Figure 1). *Bottom-left:* Moment-2 dispersion map. *Bottom-right:* Cleaned integrated spectrum with Gaussian fit, FWHM = 302.0 ± 10.8 km/s.
 
-![UV amplitude vs uv-distance with Gaussian model overlay.](output/z25_demo/uv_amplitude_fit.png)
+![UV amplitude vs uv-distance with Gaussian model overlay.](figs/uv_amplitude_fit.png)
 
-**Figure 4.** Binned visibility amplitudes (channel-averaged, real part) with the best-fit circular Gaussian model (red curve). θ<sub>maj</sub> = 1.842″ ± 0.104″, flux = 12.93 mJy.
+**Figure 4.** Binned visibility amplitudes (channel-averaged, real part) with the best-fit circular Gaussian model (red curve). θ<sub>maj</sub> = 0.815″ ± 0.128″, flux = 13.28 mJy.
 
 ---
 
@@ -94,29 +94,29 @@ The MS is imaged with CASA `tclean` (natural weighting, 1000 iterations). The FW
 
 | Quantity | Value | Notes |
 |---|---|---|
-| Intrinsic FWHM | 306 km/s | From DysmalPy model |
-| Measured FWHM | 295.6 ± 10.2 km/s | Gaussian fit to cleaned spectrum |
-| Measured SNR | 15.3 | Peak / rms of line-free channels |
-| UV fit size (θ<sub>maj</sub>) | 1.842″ ± 0.104″ | From `uvmodelfit` |
-| Measured size | 14.9 kpc | Angular diameter distance conversion |
-| Proxy mass | 3.02 × 10<sup>11</sup> M<sub>☉</sub> | FWHM² × *D* / *G* |
+| Intrinsic FWHM | 308 km/s | From DysmalPy model |
+| Measured FWHM | 302.0 ± 10.8 km/s | Gaussian fit to cleaned spectrum |
+| Measured SNR | 12.1 | Peak / rms of line-free channels |
+| UV fit size (θ<sub>maj</sub>) | 0.815″ ± 0.128″ | From `uvmodelfit` |
+| Measured size | 6.58 kpc | Angular diameter distance conversion |
+| Proxy mass | 1.39 × 10<sup>11</sup> M<sub>☉</sub> | FWHM² × *D* / *G* |
 | True baryonic mass | 4.17 × 10<sup>10</sup> M<sub>☉</sub> | Input parameter |
-| *f*<sub>eff</sub> | 0.138 | *M*<sub>bary</sub> / *M*<sub>proxy</sub> |
+| *f*<sub>eff</sub> | 0.299 | *M*<sub>bary</sub> / *M*<sub>proxy</sub> |
 
 ---
 
-## Comparison with Previous Pipeline
+## Comparison with 8 kpc Run
 
-The results are identical to those from the standalone-script pipeline (`archive/report.md`), confirming the package refactor introduced no regressions:
+The previous standalone-script pipeline used an 8 kpc disk (`archive/report.md`). Reducing the disk size to 3 kpc produces a more compact source that is less resolved by ALMA C43-2, yielding a smaller angular size, higher *f*<sub>eff</sub>, and a slightly different measured FWHM:
 
-| Metric | Previous (`archive/report.md`) | This demo (`galmockuv`) | Match? |
+| Metric | 8 kpc (`archive/report.md`) | 3 kpc (this demo) | Change |
 |---|---|---|---|
-| Intrinsic FWHM | 306 km/s | 306 km/s | Yes |
-| Measured FWHM | 295.6 km/s | 295.6 km/s | Yes |
-| SNR | 15.3 | 15.3 | Yes |
-| θ<sub>maj</sub> | 1.842″ | 1.842″ | Yes |
-| Measured size | 14.9 kpc | 14.9 kpc | Yes |
-| *f*<sub>eff</sub> | 0.138 | 0.138 | Yes |
+| Intrinsic FWHM | 306 km/s | 308 km/s | +2 km/s |
+| Measured FWHM | 295.6 km/s | 302.0 km/s | +6 km/s |
+| SNR | 15.3 | 12.1 | -3.2 |
+| θ<sub>maj</sub> | 1.842″ | 0.815″ | -1.027″ |
+| Measured size | 14.9 kpc | 6.58 kpc | -8.3 kpc |
+| *f*<sub>eff</sub> | 0.138 | 0.299 | +0.161 |
 
 ---
 

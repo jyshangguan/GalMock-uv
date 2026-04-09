@@ -22,7 +22,9 @@ from scipy.optimize import curve_fit
 
 from galmockuv.io import load_metadata, load_json
 
-OUT = Path('output/z25_demo')
+OUT = Path('demo/output/z25_demo')
+FIGS = Path('demo/figs')
+FIGS.mkdir(parents=True, exist_ok=True)
 meta = load_metadata(OUT)
 meas = load_json(OUT, 'measurements.json')
 
@@ -346,7 +348,7 @@ def intrinsic_spectrum_panel(ax):
 
 plot_moment_panels(data_int, vel_int, extent_int,
                     'Intrinsic Model \u2014 {}'.format(meta['source_id']),
-                    OUT / 'intrinsic_summary.png',
+                    FIGS / 'intrinsic_summary.png',
                     extra_panel_fn=intrinsic_spectrum_panel)
 print("  Intrinsic FWHM = {:.1f} km/s".format(fwhm_int[0]))
 
@@ -403,7 +405,7 @@ ax.set_xlim(-lim, lim)
 ax.set_ylim(-lim, lim)
 
 plt.tight_layout()
-fig.savefig(OUT / 'visibility_data.png', dpi=150, bbox_inches='tight')
+fig.savefig(FIGS / 'visibility_data.png', dpi=150, bbox_inches='tight')
 plt.close(fig)
 print("  Max uv-distance: {:.1f} klambda".format(uvdist.max()))
 
@@ -441,7 +443,7 @@ def cleaned_spectrum_panel(ax):
 
 plot_moment_panels(data_clean, vel_clean, extent_clean,
                     'Cleaned Image \u2014 {}'.format(meta['source_id']),
-                    OUT / 'cleaned_summary.png',
+                    FIGS / 'cleaned_summary.png',
                     extra_panel_fn=cleaned_spectrum_panel,
                     apply_mask=True)
 print("  Cleaned FWHM = {:.1f} km/s".format(fwhm_clean[0]))
@@ -462,7 +464,7 @@ fit_result = plot_uvbins(
     datacolumn='data',
     avg_axis='real',
     uvbin_params={'n_bins': 15, 'binning_type': 'log'},
-    plotfile=str(OUT / 'uv_amplitude_fit.png'),
+    plotfile=str(FIGS / 'uv_amplitude_fit.png'),
     target_name=meta['source_id'],
     fit_results=None,  # We run our own fit below
     verbose=False,
@@ -487,7 +489,7 @@ fit_result_with_model = plot_uvbins(
     datacolumn='data',
     avg_axis='real',
     uvbin_params={'n_bins': 15, 'binning_type': 'log'},
-    plotfile=str(OUT / 'uv_amplitude_fit.png'),
+    plotfile=str(FIGS / 'uv_amplitude_fit.png'),
     target_name=meta['source_id'],
     fit_results=uv_info_result,
     verbose=False,

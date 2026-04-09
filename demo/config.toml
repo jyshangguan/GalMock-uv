@@ -13,7 +13,7 @@ co_restfreq_ghz = 345.796   # CO(3-2) rest frequency in GHz
 # --- Baryonic component (exponential disk) ---
 # Total baryonic mass = Mstar + Mgas = 10^10.5 + 10^10 = 4.16e10 Msun
 log10_baryonic_mass_msun = 10.62
-disk_reff_kpc = 8.0               # effective radius in kpc
+disk_reff_kpc = 3.0               # effective radius in kpc
 disk_invq = 5.0                   # r_eff / r_z (disk thickness)
 n_disk = 1.0                      # Sersic index (1 = exponential)
 bt = 0.0                          # bulge-to-total ratio (0 = pure disk)
@@ -66,4 +66,4 @@ tclean_niter = 1000
 tclean_threshold = "0mJy"
 
 # --- Output ---
-output_base = "outputs/demo"
+output_base = "demo/output"
