@@ -1,0 +1,69 @@
+# galmockuv demo configuration
+# z=2.5 galaxy with Mbar=10^10.62, Mhalo=10^12
+
+# --- Source identification ---
+source_id = "z25_demo"
+
+# --- Cosmology & redshift ---
+redshift = 2.5
+
+# --- CO line ---
+co_restfreq_ghz = 345.796   # CO(3-2) rest frequency in GHz
+
+# --- Baryonic component (exponential disk) ---
+# Total baryonic mass = Mstar + Mgas = 10^10.5 + 10^10 = 4.16e10 Msun
+log10_baryonic_mass_msun = 10.62
+disk_reff_kpc = 8.0               # effective radius in kpc
+disk_invq = 5.0                   # r_eff / r_z (disk thickness)
+n_disk = 1.0                      # Sersic index (1 = exponential)
+bt = 0.0                          # bulge-to-total ratio (0 = pure disk)
+noord_flat = true                 # Noordermeer flat rotation curves
+
+# --- Dark matter halo ---
+log10_halo_mass_msun = 12.0       # log10(M_vir / M_sun)
+halo_concentration = 5.0          # NFW concentration
+
+# --- Geometry ---
+inclination_deg = 45.0            # disk inclination
+pa_deg = 30.0                     # position angle (E of N)
+
+# --- Gas kinematics ---
+intrinsic_sigma_kms = 30.0        # constant velocity dispersion (km/s)
+sigmaz_kpc = 0.9                  # vertical gas scale height (kpc)
+pressure_support = true           # include pressure support correction
+adiabatic_contract = false        # include adiabatic contraction
+
+# --- Cube sampling (intrinsic) ---
+pixscale_arcsec = 0.15            # pixel scale (arcsec/pixel)
+npix_x = 201                      # number of pixels in x
+npix_y = 201                      # number of pixels in y
+channel_width_kms = 10.0          # channel width (km/s)
+velocity_start_kms = -1000.0      # first channel center (km/s)
+nchan = 201                       # number of spectral channels
+intrinsic_beam_major_arcsec = 0.01
+intrinsic_lsf_sigma_kms = 0.1
+# Flux scaling: DysmalPy produces arbitrary normalization.
+# Scale to ~1 mJy/beam peak for detectability.
+flux_scale = 4.3e-6
+
+# --- ALMA simulation ---
+alma_mode = "simobserve"
+integration_s = 10.0
+totaltime = "600s"
+antennalist = "alma.cycle4.2"
+thermalnoise = "tsys-atm"
+user_pwv = 1.5
+mapsize = "35arcsec"
+seed = 42
+
+# --- Measurement ---
+nbeam_extract = 1
+uv_bin_width_klambda = 50.0
+uv_max_klambda = 3000.0
+size_fit_model = "G"
+line_fit_model = "gaussian"
+tclean_niter = 1000
+tclean_threshold = "0mJy"
+
+# --- Output ---
+output_base = "outputs/demo"
