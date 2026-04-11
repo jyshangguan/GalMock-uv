@@ -14,7 +14,7 @@ import numpy as np
 from pathlib import Path
 
 from galmockuv.io import save_json, load_metadata, save_metadata
-from galmockuv.casa_utils import average_uvdata, fit_uv_model
+from galmockuv.casa_utils import average_uvdata, fit_uv_model, get_beam_from_fits, compute_beam_area_pix
 
 
 # Physical constant
@@ -198,6 +198,9 @@ def measure_from_ms(ms_path, config, output_dir, metadata):
         'proxy_mass_msun': mass_result['proxy_mass'],
         'true_mass_msun': mass_result['true_mass'],
         'f_eff': mass_result['f_eff'],
+        'integrated_flux_jy_kms': fwhm_result.get('integrated_flux_jy_kms', 0),
+        'beam_major_arcsec': fwhm_result.get('beam_major_arcsec', 0),
+        'beam_minor_arcsec': fwhm_result.get('beam_minor_arcsec', 0),
     }
 
     save_json(measurements, output_dir, 'measurements.json')
@@ -210,11 +213,19 @@ def measure_from_ms(ms_path, config, output_dir, metadata):
                       if isinstance(v, (int, float, str, bool, list))},
         'mass_result': {k: v for k, v in mass_result.items()
                         if isinstance(v, (int, float, str, bool))},
+        'beam_info': {
+            'beam_major_arcsec': fwhm_result.get('beam_major_arcsec', 0),
+            'beam_minor_arcsec': fwhm_result.get('beam_minor_arcsec', 0),
+            'beam_area_pix': fwhm_result.get('beam_area_pix', 0),
+            'beam_area_arcsec2': fwhm_result.get('beam_area_arcsec2', 0),
+        },
+        'integrated_flux_jy_kms': fwhm_result.get('integrated_flux_jy_kms', 0),
     }
     save_metadata(meas_meta, output_dir, 'measurement_details.yaml')
 
     print(f"[measure_from_ms] FWHM = {fwhm_result['fwhm_kms']:.1f} km/s")
     print(f"[measure_from_ms] Size  = {uv_result.get('size_kpc', 0):.2f} kpc")
+    print(f"[measure_from_ms] Flux  = {fwhm_result.get('integrated_flux_jy_kms', 0):.4f} Jy km/s")
     print(f"[measure_from_ms] f_eff = {mass_result['f_eff']:.3f}")
 
     return measurements
@@ -335,13 +346,32 @@ def _measure_fwhm_from_fits(fits_path, config):
     hdul = fits.open(fits_path)
     data = hdul[0].data.squeeze()  # shape: (nchan, ny, nx)
     header = hdul[0].header
+
+    # Read beam info for Jy/beam -> Jy conversion
+    try:
+        beam_area_pix, beam_area_arcsec2, bmaj_arcsec, bmin_arcsec = \
+            compute_beam_area_pix(hdul)
+        has_beam = True
+    except (ValueError, KeyError):
+        beam_area_pix = 1.0
+        beam_area_arcsec2 = 0.0
+        bmaj_arcsec = 0.0
+        bmin_arcsec = 0.0
+        has_beam = False
+
     hdul.close()
 
     # Sum over spatial axes to get integrated spectrum
     if data.ndim == 3:
-        spec = np.nansum(data, axis=(1, 2))
+        spec_raw = np.nansum(data, axis=(1, 2))
     else:
-        spec = data
+        spec_raw = data
+
+    # spec_raw is in Jy/beam * pixels (scale-dependent on beam size).
+    # Keep it for backward-compatible FWHM fitting (scale-invariant),
+    # but also compute proper Jy spectrum for flux integration.
+    spec = spec_raw  # alias for FWHM fitting (unchanged behavior)
+    spec_jy = spec_raw / beam_area_pix if has_beam else spec_raw
 
     nchan = len(spec)
 
@@ -386,6 +416,10 @@ def _measure_fwhm_from_fits(fits_path, config):
     idx = np.argsort(vel)
     vel = vel[idx]
     spec = spec[idx]
+    spec_jy = spec_jy[idx]
+
+    # Channel width (km/s) — assume uniform spacing after sort
+    dv = float(np.median(np.abs(np.diff(vel)))) if len(vel) > 1 else 0.0
 
     # Fit Gaussian
     def gaussian(x, amp, cen, sigma):
@@ -427,6 +461,12 @@ def _measure_fwhm_from_fits(fits_path, config):
     vel_fit = np.linspace(vel.min(), vel.max(), 500)
     spec_fit = gaussian(vel_fit, amp, cen, sigma)
 
+    # Integrated flux: sum spec_jy over line channels * dv
+    if has_beam and dv > 0:
+        integrated_flux_jy_kms = float(np.sum(spec_jy[line_mask]) * dv)
+    else:
+        integrated_flux_jy_kms = 0.0
+
     return {
         'fwhm_kms': float(fwhm_kms),
         'fwhm_err_kms': float(fwhm_err_kms),
@@ -437,6 +477,13 @@ def _measure_fwhm_from_fits(fits_path, config):
         'spec': spec,
         'vel_fit': vel_fit,
         'spec_fit': spec_fit,
+        # New keys: integrated flux and beam info
+        'integrated_flux_jy_kms': integrated_flux_jy_kms,
+        'beam_area_pix': float(beam_area_pix) if has_beam else 0.0,
+        'beam_area_arcsec2': float(beam_area_arcsec2) if has_beam else 0.0,
+        'beam_major_arcsec': float(bmaj_arcsec) if has_beam else 0.0,
+        'beam_minor_arcsec': float(bmin_arcsec) if has_beam else 0.0,
+        'spec_jy': spec_jy,
     }
 
 

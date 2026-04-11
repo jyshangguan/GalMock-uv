@@ -1927,6 +1927,90 @@ def fit_uv_model(vis,
 
 
 # ============================================================================
+# Beam Utilities for FITS Cubes
+# ============================================================================
+
+def get_beam_from_fits(hdul):
+    """Extract beam (BMAJ, BMIN in arcsec) from a CASA FITS file.
+
+    CASA 6.7+ tclean stores per-channel beam info in a BEAMS binary table
+    extension (HDU name ``'BEAMS'``) with units of arcsec.  Older CASA
+    versions put beam info in the PRIMARY header ``BMAJ``/``BMIN`` keywords
+    in degrees.  For per-channel beams the median across channels is returned.
+
+    Parameters
+    ----------
+    hdul : astropy.io.fits.HDUList
+        Open FITS file handle.
+
+    Returns
+    -------
+    bmaj_arcsec, bmin_arcsec : float
+        Beam major and minor axis in arcsec.
+    """
+    from astropy.io import fits
+
+    # Try PRIMARY header first (older CASA, units = degrees)
+    header = hdul[0].header
+    bmaj = header.get('BMAJ', None)
+    bmin = header.get('BMIN', None)
+
+    if bmaj is not None and bmin is not None and bmaj > 0 and bmin > 0:
+        return float(bmaj) * 3600, float(bmin) * 3600  # deg -> arcsec
+
+    # Try BEAMS binary table extension (CASA 6.7+, units = arcsec)
+    for hdu in hdul:
+        if isinstance(hdu, fits.BinTableHDU) and hdu.name == 'BEAMS':
+            colnames = hdu.columns.names if hdu.columns else []
+            if 'BMAJ' in colnames and 'BMIN' in colnames:
+                bmaj_vals = hdu.data['BMAJ']
+                bmin_vals = hdu.data['BMIN']
+                # Use median beam for per-channel beams
+                bmaj = float(np.nanmedian(bmaj_vals))  # already arcsec
+                bmin = float(np.nanmedian(bmin_vals))  # already arcsec
+                return bmaj, bmin
+
+    raise ValueError("No beam information found in PRIMARY header or BEAMS table")
+
+
+def compute_beam_area_pix(hdul):
+    """Beam area in pixels from a CASA FITS file.
+
+    Gaussian beam area::
+
+        omega = pi * BMAJ * BMIN / (4 * ln(2))
+        beam_area_pix = omega / pixscale^2
+
+    Reads beam from BEAMS table extension when BMAJ/BMIN are missing from
+    the PRIMARY header (CASA 6.7+).
+
+    Parameters
+    ----------
+    hdul : astropy.io.fits.HDUList
+        Open FITS file handle.
+
+    Returns
+    -------
+    beam_area_pix : float
+        Beam area in units of pixels.
+    beam_area_arcsec2 : float
+        Beam area in square arcsec.
+    bmaj_arcsec : float
+        Beam major axis in arcsec.
+    bmin_arcsec : float
+        Beam minor axis in arcsec.
+    """
+    bmaj_arcsec, bmin_arcsec = get_beam_from_fits(hdul)
+    header = hdul[0].header
+    pixscale_arcsec = abs(header.get('CDELT1', 1)) * 3600
+
+    beam_area_arcsec2 = (np.pi * bmaj_arcsec * bmin_arcsec
+                         / (4.0 * np.log(2)))
+    beam_area_pix = beam_area_arcsec2 / pixscale_arcsec**2
+    return beam_area_pix, beam_area_arcsec2, bmaj_arcsec, bmin_arcsec
+
+
+# ============================================================================
 # Bootstrap Functions for Robust Error Estimation
 # ============================================================================
 
