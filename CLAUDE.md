@@ -29,12 +29,18 @@ Two environments are needed (no single env has both DysmalPy and CASA):
 
 | Environment | Provides | Layers |
 |-------------|----------|--------|
-| DysmalPy (e.g. `alma` conda env) | `dysmalpy`, `spectral-cube` | A |
+| DysmalPy (e.g. `alma` conda env) | `dysmalpy`, `spectral-cube`, `jax` | A |
 | CASA (`casatools`, `casatasks`) | CASA tools/tasks | B+C |
 
 Key deps (both envs): `numpy`, `scipy`, `matplotlib`, `astropy`, `yaml`.
-Layer A also needs: `dysmalpy`, `spectral-cube`.
+Layer A also needs: `dysmalpy` (JAX-accelerated fork), `spectral-cube`, `jax`, `jaxlib`.
 Layer C also needs: `casatools`, `casatools.ms`, `casatools.table`.
+
+**JAX note**: The DysmalPy installation at
+`/home/shangguan/Softwares/my_modules/dysmalpy/` is a JAX-accelerated fork that
+replaces the Cython `cutils` backend with `jax.numpy` vectorised operations.
+For large cubes (201^3+), JAX's XLA compiler may require GPU memory or the
+`zcalc_truncate=True` option on the observation `mod_options` to avoid OOM.
 
 The entry point `galmockuv.py` inserts its parent directory into `sys.path` so
 `import galmockuv` works without pip installation.
@@ -112,3 +118,10 @@ See `demo/config.toml` for all parameters.  The `io.py` module has a
 | `measure_from_imaged_cube(cube_path, config, output_dir, metadata)` | Layer C alt: measure from FITS |
 | `plot_uvbins(vis, ...)` | Binned UV amplitude plot with fit overlay |
 | `fit_uv_model(vis, ...)` | Gaussian UV model fit via `uvmodelfit` |
+
+## Development strategy
+
+The `dev/` folder can be used as a workspace for developing specific features in the future. Use it to keep maintaining the following notes. Update them in or after every run of development.
+- **plan.md** Write down the small plan for each tasks and the check list. For each run, check if the taskes have been finished.
+- **problem.md** Note the problems we meet multiple times so one can pay attention and avoid them.
+- **develop_log.md** The log of all the changes. No need to be in detail but note what has been changed and fixed.

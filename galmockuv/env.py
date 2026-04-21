@@ -1,4 +1,9 @@
-"""Environment detection for CASA and DysmalPy."""
+"""Environment detection for CASA and DysmalPy.
+
+DysmalPy is installed from a JAX-accelerated fork at
+``/home/shangguan/Softwares/my_modules/dysmalpy/``.  The fork requires
+``jax`` and ``jaxlib`` in addition to the standard DysmalPy dependencies.
+"""
 
 
 def is_casa_env():
