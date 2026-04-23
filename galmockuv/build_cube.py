@@ -30,7 +30,9 @@ def build_cube(config, output_dir):
         - intrinsic_sigma_kms, sigmaz_kpc
         - pressure_support, adiabatic_contract
         - pixscale_arcsec, npix_x, npix_y
-        - channel_width_kms, velocity_start_kms, nchan
+        - channel_width_kms, velocity_start_kms, nchan  (or auto-computed from
+          spectral_n_sigma, spectral_n_linefree, channel_width_kms)
+        - oversample (default 3)
         - intrinsic_beam_major_arcsec, intrinsic_lsf_sigma_kms
     output_dir : str or Path
         Directory to save all outputs.
@@ -75,8 +77,27 @@ def build_cube(config, output_dir):
     npix_x = int(config['npix_x'])
     npix_y = int(config['npix_y'])
     dv = float(config['channel_width_kms'])
-    v_start = float(config['velocity_start_kms'])
-    nchan = int(config['nchan'])
+
+    # Auto-compute spectral range from line width, unless manually overridden
+    if 'nchan' in config and 'velocity_start_kms' in config:
+        nchan = int(config['nchan'])
+        v_start = float(config['velocity_start_kms'])
+    elif 'line_window_kms' in config:
+        line_fwhm = float(config['line_window_kms'])
+        n_linefree = int(config.get('spectral_n_linefree', 10))
+        half_range = line_fwhm / 2.0 + n_linefree * dv
+        nchan = int(np.ceil(2 * half_range / dv)) + 1
+        if nchan % 2 == 0:
+            nchan += 1
+        v_start = -half_range
+    else:
+        n_sigma = float(config.get('spectral_n_sigma', 5))
+        n_linefree = int(config.get('spectral_n_linefree', 10))
+        half_range = n_sigma * sigma0 + n_linefree * dv
+        nchan = int(np.ceil(2 * half_range / dv)) + 1
+        if nchan % 2 == 0:
+            nchan += 1
+        v_start = -half_range
 
     beam_arcsec = float(config.get('intrinsic_beam_major_arcsec', 0.01))
     lsf_kms = float(config.get('intrinsic_lsf_sigma_kms', 0.1))
@@ -120,7 +141,9 @@ def build_cube(config, output_dir):
 
     # ---- Set up observation and instrument ----
     obs = observation.Observation(name='OBS', tracer='LINE')
-    obs.mod_options.oversample = 3
+    oversample = int(config.get('oversample', 3))
+    obs.mod_options.oversample = oversample
+    obs.mod_options.zcalc_truncate = config.get('zcalc_truncate', True)
 
     inst = instrument.Instrument()
     # Use beam/LSF much smaller than pixel/channel to avoid convolving the

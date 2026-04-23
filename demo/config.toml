@@ -38,8 +38,10 @@ pixscale_arcsec = 0.15            # pixel scale (arcsec/pixel)
 npix_x = 201                      # number of pixels in x
 npix_y = 201                      # number of pixels in y
 channel_width_kms = 10.0          # channel width (km/s)
-velocity_start_kms = -1000.0      # first channel center (km/s)
-nchan = 201                       # number of spectral channels
+line_window_kms = 500.0           # expected max observed line FWHM (km/s)
+spectral_n_sigma = 5              # cover ±5σ of the line (fallback if line_window_kms not set)
+spectral_n_linefree = 10          # extra line-free channels per side for RMS
+oversample = 3                    # DysmalPy spatial oversampling factor
 intrinsic_beam_major_arcsec = 0.01
 intrinsic_lsf_sigma_kms = 0.1
 # Flux scaling: DysmalPy produces arbitrary normalization.

@@ -39,8 +39,8 @@ Layer C also needs: `casatools`, `casatools.ms`, `casatools.table`.
 **JAX note**: The DysmalPy installation at
 `/home/shangguan/Softwares/my_modules/dysmalpy/` is a JAX-accelerated fork that
 replaces the Cython `cutils` backend with `jax.numpy` vectorised operations.
-For large cubes (201^3+), JAX's XLA compiler may require GPU memory or the
-`zcalc_truncate=True` option on the observation `mod_options` to avoid OOM.
+`zcalc_truncate=True` is enabled by default in `build_cube` to use sparse
+propagation (only active z-slices), avoiding OOM on large cubes (201^3+).
 
 The entry point `galmockuv.py` inserts its parent directory into `sys.path` so
 `import galmockuv` works without pip installation.
@@ -66,7 +66,16 @@ disk_reff_kpc = 8.0
 inclination_deg = 45.0
 totaltime = "600s"
 antennalist = "alma.cycle4.2"
+channel_width_kms = 10.0
+spectral_n_sigma = 5          # cover ±5σ of the line
+spectral_n_linefree = 10      # extra line-free channels per side for RMS
+oversample = 3                # DysmalPy spatial oversampling factor
 ```
+
+The spectral range (`nchan`, `velocity_start_kms`) is auto-computed from
+`intrinsic_sigma_kms`, `spectral_n_sigma`, `spectral_n_linefree`, and
+`channel_width_kms`.  Explicit `nchan` and `velocity_start_kms` can be
+provided to override the auto-computation.
 
 See `demo/config.toml` for all parameters.  The `io.py` module has a
 `_flatten_config()` fallback for nested TOML tables.

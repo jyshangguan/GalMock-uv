@@ -1,5 +1,21 @@
 # Recurring Problems
 
+## Spectral range formula ignores rotation broadening
+
+The auto-computed spectral range (`nchan`, `velocity_start_kms`) uses
+`spectral_n_sigma * intrinsic_sigma_kms` which only covers the turbulent
+velocity dispersion (e.g., 5×30 = 150 km/s).  The observed line width is
+dominated by rotation (~300 km/s FWHM), so the computed range is far too
+narrow and produces no line-free channels.  Always set `line_window_kms`
+to the expected observed line FWHM when running the pipeline.
+
+## FWHM measurement without spatial masking
+
+`_measure_fwhm_from_fits()` sums over ALL spatial pixels to compute the
+integrated spectrum, including thousands of noise-only edge pixels.  This
+degrades SNR and biases the FWHM.  Always use spatial masking (set
+`measure_spatial_sigma` in config, default 1.5) to exclude low-S/N pixels.
+
 ## JAX + numpy version conflicts
 
 The JAX DysmalPy fork requires `numpy>=2.0` and `astropy>=6.0`, but the
@@ -52,3 +68,21 @@ python -c "import jax; print(jax.__version__)"  # must be 0.4.38
 JAX removed `jax.scipy.special.hyp2f1` in version 0.4.38.  DysmalPy's
 `hyp2f1.py` now checks `hasattr(jax.scipy.special, 'hyp2f1')` and falls back
 to the custom power-series implementation when the builtin is unavailable.
+
+## `np.indices()` + `np.vstack()` memory trap
+
+`np.indices(shape)` creates `ndim` full-size arrays (3 x N^3 at 240^3 = 995 MB).
+Combined with `np.vstack()` and `.flatten()` copies, this can dominate memory
+in helper functions like `_make_cube_ai()`.  Always prefer `np.ravel()` (a view,
+zero-copy) + `np.flatnonzero()` + modular index reconstruction
+(`idx % nx`, `(idx // nx) % ny`, `idx // (nx * ny)`) to recover C-order
+multi-dimensional indices from flat indices without allocating full grids.
+
+## Dimming not applied in active-only cube path
+
+The `_use_active_path` in `model_set.py` evaluates light profiles for active
+pixels only (to save memory), but when it was introduced (commit `aa12476`)
+the `flux *= dimming(xsky, ysky, zsky)` line was not carried over from the
+original path.  This produced cube values 10^10x too large.  Fixed in commit
+`56c7144`.  When adding new code paths that mirror existing ones, always check
+that all transformations (dimming, extinction, etc.) are applied consistently.

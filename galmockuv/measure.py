@@ -361,10 +361,23 @@ def _measure_fwhm_from_fits(fits_path, config):
 
     hdul.close()
 
-    # Sum over spatial axes to get integrated spectrum
+    # Spatial mask: only include pixels with significant emission in moment-0
     if data.ndim == 3:
-        spec_raw = np.nansum(data, axis=(1, 2))
+        mom0 = np.nansum(data, axis=0)
+        # Estimate noise from edge pixels (MAD-based)
+        n_edge = 5
+        edge = np.concatenate([
+            mom0[:n_edge, :].ravel(), mom0[-n_edge:, :].ravel(),
+            mom0[:, :n_edge].ravel(), mom0[:, -n_edge:].ravel()
+        ])
+        noise_est = np.median(np.abs(edge)) * 1.4826  # MAD -> sigma
+        mask_sigma = float(config.get('measure_spatial_sigma', 1.5))
+        spatial_mask = mom0 > mask_sigma * noise_est
+        n_masked = int(np.sum(spatial_mask))
+        spec_raw = np.nansum(data[:, spatial_mask], axis=1)
     else:
+        spatial_mask = None
+        n_masked = 0
         spec_raw = data
 
     # spec_raw is in Jy/beam * pixels (scale-dependent on beam size).

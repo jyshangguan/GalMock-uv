@@ -358,8 +358,11 @@ def simulate_alma(cube_path, config, output_dir):
             _move_ms(ms_path, track_final)
             track_ms_paths.append(track_final)
         else:
-            # Single track: MS stays in project dir for now
-            track_ms_paths.append(ms_path)
+            # Single track: move MS to output_dir before cleanup
+            track_ms_name = f"{source_id}_track00.ms"
+            track_final = output_dir / track_ms_name
+            _move_ms(ms_path, track_final)
+            track_ms_paths.append(track_final)
 
         # Clean up CASA project directory
         if Path(project_dir).exists() and Path(project_dir).is_dir():
