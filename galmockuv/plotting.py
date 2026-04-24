@@ -1,66 +1,358 @@
-"""Diagnostic plotting utilities."""
+"""Diagnostic plotting utilities.
+
+All moment-map functions read raw FITS data directly and compute moments
+manually with ``np.nansum`` rather than using ``SpectralCube.moment()``.
+SpectralCube applies unit conversions that depend on the spectral axis
+units (Hz vs km/s) and beam handling, which produces incorrect moment
+values for CASA-exported FITS cubes with a frequency axis.
+"""
 
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
+from matplotlib.colors import AsinhNorm
 from pathlib import Path
+from scipy.optimize import curve_fit
+from astropy.io import fits
 
 
-def plot_moment_maps(spectral_cube, output_dir, source_id):
-    """Generate moment-0, moment-1, moment-2 maps from a SpectralCube.
+# ---------------------------------------------------------------------------
+# Low-level helpers: FITS I/O, velocity axis, masking, moment computation
+# ---------------------------------------------------------------------------
+
+def read_fits_cube(fits_path):
+    """Read a FITS cube, returning (data_3d, header, pixscale_arcsec, extent).
+
+    FITS stores data in reverse NAXIS order in numpy.  For standard radio cubes:
+      NAXIS1=RA, NAXIS2=Dec, NAXIS3=FREQ, [NAXIS4=STOKES]
+      => numpy shape = (STOKES, FREQ, DEC, RA) = e.g. (1, 201, 201, 201)
+    After squeezing Stokes, we get (nchan, ny, nx).
 
     Parameters
     ----------
-    spectral_cube : spectral_cube.SpectralCube
-        The spectral cube (must have .moment() method).
-    output_dir : str or Path
-        Directory to save plots.
-    source_id : str
-        Source identifier for plot titles.
-    """
-    output_dir = Path(output_dir)
-    pixscale = np.abs(spectral_cube.header['CDELT1']) * 3600  # arcsec/pix
-    nx, ny = spectral_cube.shape[1], spectral_cube.shape[2]
+    fits_path : str or Path
+        Path to a FITS cube.
 
-    # Compute extent in arcsec (relative to center)
+    Returns
+    -------
+    data : ndarray, shape (nchan, ny, nx)
+    header : astropy.io.fits.Header
+    pixscale : float
+        Arcsec per pixel.
+    extent : list of 4 float
+        [ra0, ra1, dec0, dec1] in arcsec for ``imshow``.
+    """
+    hdul = fits.open(fits_path)
+    data = hdul[0].data
+    header = hdul[0].header
+    hdul.close()
+
+    data = np.squeeze(data)
+    assert data.ndim == 3, f"Expected 3D cube after squeeze, got {data.shape}"
+
+    pixscale = np.abs(header['CDELT1']) * 3600  # NAXIS1 = RA
+    nchan, ny, nx = data.shape
     ra0 = (-nx // 2 - 0.5) * pixscale
     ra1 = (nx // 2 + 0.5) * pixscale
     dec0 = (-ny // 2 - 0.5) * pixscale
     dec1 = (ny // 2 + 0.5) * pixscale
     extent = [ra0, ra1, dec0, dec1]
 
-    for order, label, cmap in [(0, 'Moment 0', 'viridis'),
-                                (1, 'Moment 1', 'RdBu_r'),
-                                (2, 'Moment 2', 'magma')]:
-        mom = spectral_cube.moment(order=order)
-        data = mom.value
+    return data, header, pixscale, extent
 
+
+def get_velocity_axis(header, restfreq_ghz=None):
+    """Build velocity axis (km/s offsets) from FITS header.
+
+    For frequency-axis cubes, uses ``v = c * (f_center - freqs) / f_center``
+    (observed-frame centred).  This matches the convention used by the
+    intrinsic DysmalPy cube.
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header
+    restfreq_ghz : float, optional
+        CO rest frequency in GHz.  Falls back to the ``RESTFRQ`` header
+        keyword if not provided.
+
+    Returns
+    -------
+    vel : ndarray, shape (nchan,)
+        Velocity offset in km/s.
+    """
+    nax = header.get('NAXIS', 4)
+    spectral_axis_num = None
+    for ax_i in range(1, nax + 1):
+        ctype = header.get('CTYPE' + str(ax_i), '').upper()
+        if 'FREQ' in ctype or 'VOPT' in ctype or 'VEL' in ctype:
+            spectral_axis_num = ax_i
+            break
+    if spectral_axis_num is None:
+        spectral_axis_num = 3
+
+    crval = header.get('CRVAL' + str(spectral_axis_num), 0)
+    cdelt = header.get('CDELT' + str(spectral_axis_num), 0)
+    crpix = header.get('CRPIX' + str(spectral_axis_num), 1)
+    nch = header.get('NAXIS' + str(spectral_axis_num))
+    freqs = crval + (np.arange(nch) - crpix + 1) * cdelt  # Hz
+
+    restfreq = header.get('RESTFRQ', 0)
+    if restfreq <= 0 and restfreq_ghz is not None:
+        restfreq = restfreq_ghz * 1e9
+
+    ctype = header.get('CTYPE' + str(spectral_axis_num), '').upper()
+    if 'FREQ' in ctype:
+        f_center = freqs[nch // 2]
+        vel = 2.99792458e8 * (f_center - freqs) / f_center / 1e3  # km/s
+    else:
+        vel = freqs / 1e3
+    return vel
+
+
+def compute_moment0(data_3d):
+    """Moment-0: integrated intensity (sum over spectral axis)."""
+    return np.nansum(data_3d, axis=0)
+
+
+def make_signal_mask(m0, n_sigma=3.0, dilate=2):
+    """Spatial mask from moment-0 using sigma-clipped noise estimate.
+
+    Parameters
+    ----------
+    m0 : ndarray, shape (ny, nx)
+    n_sigma : float
+        Detection threshold above RMS.
+    dilate : int
+        Number of binary dilation iterations.
+
+    Returns
+    -------
+    mask : bool ndarray, shape (ny, nx)
+    """
+    from astropy.stats import sigma_clipped_stats
+    _, _, std = sigma_clipped_stats(m0, sigma=3, maxiters=5)
+    mask = m0 > n_sigma * std
+    if dilate > 0:
+        from scipy.ndimage import binary_dilation
+        mask = binary_dilation(mask, iterations=dilate)
+    return mask
+
+
+def make_3d_mask(data_3d, vel, spatial_mask, channel_sigma=2.0):
+    """3D (channel x spatial) mask for robust moment calculation.
+
+    Combines a 2D spatial mask with a 1D channel mask.  Line-free RMS is
+    estimated from the outer 20% of the velocity range.
+
+    Parameters
+    ----------
+    data_3d : ndarray, shape (nchan, ny, nx)
+    vel : ndarray, shape (nchan,)
+    spatial_mask : bool ndarray, shape (ny, nx)
+    channel_sigma : float
+        Channel detection threshold above line-free RMS.
+
+    Returns
+    -------
+    mask : bool ndarray, shape (nchan, ny, nx)
+    """
+    from astropy.stats import sigma_clipped_stats
+    nch = data_3d.shape[0]
+
+    spec = np.nansum(data_3d, axis=(1, 2))
+    idx = np.argsort(vel)
+    vel_s = vel[idx]
+    spec_s = spec[idx]
+
+    n_free = nch // 5
+    line_free = np.concatenate([spec_s[:n_free], spec_s[-n_free:]])
+    _, _, rms = sigma_clipped_stats(line_free, sigma=3, maxiters=5)
+
+    channel_mask_sorted = spec_s > channel_sigma * rms
+    channel_mask = np.zeros(nch, dtype=bool)
+    channel_mask[idx] = channel_mask_sorted
+
+    return channel_mask[:, None, None] & spatial_mask[None, :, :]
+
+
+def compute_moment1(data_3d, vel, mask=None):
+    """Moment-1: intensity-weighted mean velocity.
+
+    Pixels with total flux below 5% of the 99th percentile are set to NaN.
+
+    Parameters
+    ----------
+    data_3d : ndarray, shape (nchan, ny, nx)
+    vel : ndarray, shape (nchan,)
+    mask : None, 2D (ny, nx), or 3D (nchan, ny, nx) bool array
+
+    Returns
+    -------
+    m1 : ndarray, shape (ny, nx)
+        Intensity-weighted mean velocity in km/s.
+    """
+    idx = np.argsort(vel)
+    d = data_3d[idx]
+    v = vel[idx]
+
+    if mask is not None:
+        d = d.copy()
+        if mask.ndim == 3:
+            d[~mask[idx]] = 0
+        else:
+            d[:, ~mask] = 0
+
+    total = np.nansum(d, axis=0)
+
+    if np.any(total > 0):
+        min_total = 0.05 * np.nanpercentile(total[total > 0], 99)
+    else:
+        min_total = 0
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        m1 = np.where(total > min_total,
+                      np.nansum(v[:, None, None] * d, axis=0) / total,
+                      np.nan)
+    return m1
+
+
+def compute_moment2(data_3d, vel, mask=None):
+    """Moment-2: intensity-weighted velocity dispersion (sigma).
+
+    Parameters
+    ----------
+    data_3d : ndarray, shape (nchan, ny, nx)
+    vel : ndarray, shape (nchan,)
+    mask : None, 2D (ny, nx), or 3D (nchan, ny, nx) bool array
+
+    Returns
+    -------
+    m2 : ndarray, shape (ny, nx)
+        Velocity dispersion in km/s.
+    """
+    idx = np.argsort(vel)
+    d = data_3d[idx]
+    v = vel[idx]
+
+    if mask is not None:
+        d = d.copy()
+        if mask.ndim == 3:
+            d[~mask[idx]] = 0
+        else:
+            d[:, ~mask] = 0
+
+    m1 = compute_moment1(data_3d, vel, mask=mask)
+
+    total = np.nansum(d, axis=0)
+    if np.any(total > 0):
+        min_total = 0.05 * np.nanpercentile(total[total > 0], 99)
+    else:
+        min_total = 0
+
+    m1_safe = np.where(np.isfinite(m1), m1, 0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        m2_var = np.where(
+            total > min_total,
+            np.nansum(((v[:, None, None] - m1_safe[None, :, :]) ** 2) * d, axis=0) / total,
+            np.nan,
+        )
+    m2_sigma = np.sqrt(np.maximum(m2_var, 0))
+    return m2_sigma
+
+
+def compute_spectrum(data_3d, vel):
+    """Integrated spectrum (sum over spatial axes), sorted by velocity."""
+    spec = np.nansum(data_3d, axis=(1, 2))
+    idx = np.argsort(vel)
+    return vel[idx], spec[idx]
+
+
+def fit_gaussian_spectrum(vel, spec):
+    """Fit a Gaussian to a spectrum.
+
+    Returns
+    -------
+    fwhm, fwhm_err, amp, cen, sigma : float
+    """
+    ipeak = np.argmax(np.abs(spec))
+    try:
+        popt, pcov = curve_fit(_gaussian, vel, spec,
+                               p0=[spec[ipeak], vel[ipeak], 100], maxfev=10000)
+        amp, cen, sigma = popt
+        sigma_err = np.sqrt(np.diag(pcov))[2]
+        fwhm = 2.355 * sigma
+        fwhm_err = 2.355 * sigma_err
+        return fwhm, fwhm_err, amp, cen, sigma
+    except RuntimeError:
+        return 0, 0, spec[ipeak], vel[ipeak], 100
+
+
+def _gaussian(x, amp, cen, sigma):
+    return amp * np.exp(-0.5 * ((x - cen) / sigma) ** 2)
+
+
+# ---------------------------------------------------------------------------
+# High-level plotting functions
+# ---------------------------------------------------------------------------
+
+def plot_moment_maps(fits_path, output_dir, source_id, apply_mask=False,
+                     restfreq_ghz=None):
+    """Generate individual moment-0, moment-1, moment-2 map figures.
+
+    Parameters
+    ----------
+    fits_path : str or Path
+        Path to a FITS cube (intrinsic or cleaned).
+    output_dir : str or Path
+        Directory to save plots.
+    source_id : str
+        Source identifier for plot titles.
+    apply_mask : bool
+        If True, apply 3D masking to moment-1 and moment-2.
+    restfreq_ghz : float, optional
+        CO rest frequency in GHz.  Passed to ``get_velocity_axis``.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    data, header, _, extent = read_fits_cube(fits_path)
+    vel = get_velocity_axis(header, restfreq_ghz=restfreq_ghz)
+
+    m0 = compute_moment0(data)
+
+    if apply_mask:
+        spatial_mask = make_signal_mask(m0, n_sigma=3.0, dilate=2)
+        mask = make_3d_mask(data, vel, spatial_mask, channel_sigma=2.0)
+    else:
+        mask = None
+
+    m1 = compute_moment1(data, vel, mask=mask)
+    m2 = compute_moment2(data, vel, mask=mask)
+
+    for order, label, cmap, mom_data in [
+        (0, 'Moment 0', 'viridis', m0),
+        (1, 'Moment 1', 'RdBu_r', m1),
+        (2, 'Moment 2', 'magma', m2),
+    ]:
         fig, ax = plt.subplots(figsize=(6, 5))
         if order == 0:
-            vmax = np.nanpercentile(np.abs(data), 99)
-            vmin = 0
-            norm = matplotlib.colors.AsinhNorm(vmin=0, vmax=vmax)
-            unit_label = str(mom.unit)
+            vmax = np.nanpercentile(np.abs(mom_data[mom_data != 0]), 99) if np.any(mom_data != 0) else 1
+            im = ax.imshow(mom_data, origin='lower', extent=extent,
+                           cmap=cmap, norm=AsinhNorm(vmin=0, vmax=vmax),
+                           aspect='equal')
+            unit_label = 'Flux'
         elif order == 1:
-            valid = data[np.isfinite(data)]
+            valid = mom_data[np.isfinite(mom_data)]
             vmax = np.nanpercentile(np.abs(valid), 99) if len(valid) > 0 else 1
-            vmin = -vmax
+            im = ax.imshow(mom_data, origin='lower', extent=extent,
+                           cmap=cmap, vmin=-vmax, vmax=vmax, aspect='equal')
             unit_label = 'km/s'
         else:
-            # Moment 2 returns variance; convert to sigma (km/s)
-            data = np.sqrt(np.maximum(data, 0))
-            valid = data[np.isfinite(data) & (data > 0)]
+            valid = mom_data[np.isfinite(mom_data) & (mom_data > 0)]
             vmax = np.nanpercentile(valid, 99) if len(valid) > 0 else 1
-            vmin = 0
+            im = ax.imshow(mom_data, origin='lower', extent=extent,
+                           cmap=cmap, vmin=0, vmax=vmax, aspect='equal')
             unit_label = 'km/s'
-
-        im = ax.imshow(data, origin='lower', extent=extent,
-                       cmap=cmap, norm=norm if order == 0 else None,
-                       vmin=vmin if order != 0 else None,
-                       vmax=vmax if order != 0 else None,
-                       aspect='equal')
 
         plt.colorbar(im, ax=ax, label=unit_label)
         ax.set_xlabel(r'$\Delta$RA (")')
@@ -70,8 +362,108 @@ def plot_moment_maps(spectral_cube, output_dir, source_id):
         fig.savefig(output_dir / f'moment{order}.png', dpi=150, bbox_inches='tight')
         plt.close(fig)
 
-    return output_dir
 
+def plot_summary(fits_path, output_dir, source_id, apply_mask=False,
+                 restfreq_ghz=None, extra_panel_fn=None):
+    """Generate a 2x2 summary figure: moment-0, moment-1, moment-2, spectrum+fit.
+
+    Parameters
+    ----------
+    fits_path : str or Path
+        Path to a FITS cube (intrinsic or cleaned).
+    output_dir : str or Path
+        Directory to save the plot.
+    source_id : str
+    apply_mask : bool
+        If True, apply 3D masking to moment-1 and moment-2.
+    restfreq_ghz : float, optional
+        CO rest frequency in GHz.
+    extra_panel_fn : callable, optional
+        ``extra_panel_fn(ax)`` draws custom content in the bottom-right panel.
+        If None, an integrated spectrum with Gaussian fit is shown.
+    """
+    output_dir = Path(output_dir)
+    data, header, _, extent = read_fits_cube(fits_path)
+    vel = get_velocity_axis(header, restfreq_ghz=restfreq_ghz)
+
+    m0 = compute_moment0(data)
+
+    if apply_mask:
+        spatial_mask = make_signal_mask(m0, n_sigma=3.0, dilate=2)
+        mask = make_3d_mask(data, vel, spatial_mask, channel_sigma=2.0)
+    else:
+        mask = None
+
+    m1 = compute_moment1(data, vel, mask=mask)
+    m2 = compute_moment2(data, vel, mask=mask)
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    # Moment 0
+    ax = axes[0, 0]
+    vmax = np.nanpercentile(np.abs(m0[m0 != 0]), 99) if np.any(m0 != 0) else 1
+    im = ax.imshow(m0, origin='lower', extent=extent, cmap='viridis',
+                   norm=AsinhNorm(vmin=0, vmax=vmax), aspect='equal')
+    plt.colorbar(im, ax=ax)
+    ax.set_title('Moment 0 (Integrated Flux)')
+    ax.set_xlabel(r'$\Delta$RA (")')
+    ax.set_ylabel(r'$\Delta$Dec (")')
+
+    # Moment 1
+    ax = axes[0, 1]
+    valid = m1[np.isfinite(m1)]
+    vmax1 = np.nanpercentile(np.abs(valid), 99) if len(valid) > 0 else 1
+    im = ax.imshow(m1, origin='lower', extent=extent, cmap='RdBu_r',
+                   vmin=-vmax1, vmax=vmax1, aspect='equal')
+    plt.colorbar(im, ax=ax)
+    ax.set_title('Moment 1 (Velocity Field)')
+    ax.set_xlabel(r'$\Delta$RA (")')
+    ax.set_ylabel(r'$\Delta$Dec (")')
+
+    # Moment 2
+    ax = axes[1, 0]
+    valid2 = m2[np.isfinite(m2) & (m2 > 0)]
+    vmax2 = np.nanpercentile(valid2, 99) if len(valid2) > 0 else 1
+    im = ax.imshow(m2, origin='lower', extent=extent, cmap='magma',
+                   vmin=0, vmax=vmax2, aspect='equal')
+    plt.colorbar(im, ax=ax)
+    ax.set_title('Moment 2 (Velocity Dispersion)')
+    ax.set_xlabel(r'$\Delta$RA (")')
+    ax.set_ylabel(r'$\Delta$Dec (")')
+
+    # Bottom-right panel: spectrum + Gaussian fit (or custom)
+    ax = axes[1, 1]
+    if extra_panel_fn is not None:
+        extra_panel_fn(ax)
+    else:
+        vel_s, spec_s = compute_spectrum(data, vel)
+        fwhm, fwhm_err, amp, cen, sigma = fit_gaussian_spectrum(vel_s, spec_s)
+
+        vel_fit = np.linspace(vel_s.min(), vel_s.max(), 500)
+        spec_fit = _gaussian(vel_fit, amp, cen, sigma)
+        ax.plot(vel_s, spec_s, 'k-', lw=1, label='Data')
+        ax.plot(vel_fit, spec_fit, 'r-', lw=2, label='Fit')
+        ax.axvline(cen, color='gray', ls=':', lw=1)
+        txt = f"FWHM = {fwhm:.1f} km/s"
+        if fwhm_err > 0:
+            txt += f" $\\pm$ {fwhm_err:.1f}"
+        ax.text(0.05, 0.95, txt, transform=ax.transAxes, va='top',
+                fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+        ax.set_xlabel('Velocity (km/s)')
+        ax.set_ylabel('Flux')
+        ax.set_title('Integrated Spectrum')
+        ax.legend()
+        ax.axhline(0, color='gray', ls='--', lw=0.5)
+
+    fig.suptitle(f'Mock Summary - {source_id}', fontsize=14, y=0.98)
+    plt.tight_layout()
+    fig.savefig(output_dir / 'summary.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Array-based plotting (no FITS dependency, kept from original)
+# ---------------------------------------------------------------------------
 
 def plot_integrated_spectrum(vel_axis, flux, output_dir, source_id,
                              flux_unit='mJy', vel_unit='km/s'):
@@ -181,78 +573,6 @@ def plot_spectrum_fit(vel_axis, flux, fit_result, output_dir, source_id,
     ax.minorticks_on()
     plt.tight_layout()
     fig.savefig(output_dir / 'spectrum_fit.png', dpi=150, bbox_inches='tight')
-    plt.close(fig)
-
-
-def plot_summary_single(cube, meas, output_dir, source_id):
-    """Multi-panel summary figure for one source.
-
-    Parameters
-    ----------
-    cube : spectral_cube.SpectralCube
-    meas : dict
-        Measurement results.
-    output_dir : str or Path
-    source_id : str
-    """
-    output_dir = Path(output_dir)
-    pixscale = np.abs(cube.header['CDELT1']) * 3600
-    nx, ny = cube.shape[1], cube.shape[2]
-    ra0 = (-nx // 2 - 0.5) * pixscale
-    ra1 = (nx // 2 + 0.5) * pixscale
-    dec0 = (-ny // 2 - 0.5) * pixscale
-    dec1 = (ny // 2 + 0.5) * pixscale
-    extent = [ra0, ra1, dec0, dec1]
-
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-
-    # Panel 1: moment-0
-    ax = axes[0, 0]
-    m0 = cube.moment(order=0).value
-    vmax = np.nanpercentile(m0, 99)
-    im = ax.imshow(m0, origin='lower', extent=extent, cmap='viridis',
-                   vmin=0, vmax=vmax, aspect='equal')
-    plt.colorbar(im, ax=ax)
-    ax.set_title('Moment 0')
-    ax.set_xlabel(r'$\Delta$RA (")')
-    ax.set_ylabel(r'$\Delta$Dec (")')
-
-    # Panel 2: moment-1
-    ax = axes[0, 1]
-    m1 = cube.moment(order=1).value
-    vmax = np.nanpercentile(np.abs(m1[m1 != 0]), 99) if np.any(m1 != 0) else 1
-    im = ax.imshow(m1, origin='lower', extent=extent, cmap='RdBu_r',
-                   vmin=-vmax, vmax=vmax, aspect='equal')
-    plt.colorbar(im, ax=ax)
-    ax.set_title('Moment 1')
-    ax.set_xlabel(r'$\Delta$RA (")')
-    ax.set_ylabel(r'$\Delta$Dec (")')
-
-    # Panel 3: integrated spectrum
-    ax = axes[1, 0]
-    spec = cube.sum(axis=(1, 2)).value
-    vel = np.arange(len(spec))  # channel index
-    ax.plot(vel, spec, 'k-', lw=1)
-    ax.set_xlabel('Channel')
-    ax.set_ylabel('Flux')
-    ax.set_title('Integrated Spectrum')
-
-    # Panel 4: summary text
-    ax = axes[1, 1]
-    ax.axis('off')
-    txt_lines = ['Summary:', '']
-    for k, v in meas.items():
-        if isinstance(v, float):
-            txt_lines.append(f'{k}: {v:.3f}')
-        else:
-            txt_lines.append(f'{k}: {v}')
-    ax.text(0.1, 0.9, '\n'.join(txt_lines), transform=ax.transAxes,
-            va='top', fontsize=11, family='monospace',
-            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.5))
-
-    fig.suptitle(f'Mock Summary - {source_id}', fontsize=14, y=0.98)
-    plt.tight_layout()
-    fig.savefig(output_dir / 'summary.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 

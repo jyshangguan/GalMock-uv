@@ -72,7 +72,13 @@ nbeam_extract = 1
 uv_bin_width_klambda = 50.0
 uv_max_klambda = 3000.0
 size_fit_model = "G"
-line_fit_model = "gaussian"
+line_fit_model = "doublepeak"          # "gaussian", "doublepeak", or "doublepeak_asymmetric"
+uv_fit_method = "mcmc"            # "uvmodelfit" (CASA) or "mcmc" (galfit_uv)
+uv_fit_model = "gaussian"            # UV model for mcmc: "gaussian", "sersic", or "point"
+uv_mcmc_max_steps = 5000
+uv_mcmc_burnin = 2500
+uv_mcmc_nwalk_factor = 5
+uv_mcmc_n_workers = 4
 tclean_niter = 1000
 tclean_threshold = "0mJy"
 

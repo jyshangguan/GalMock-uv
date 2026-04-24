@@ -86,3 +86,35 @@ the `flux *= dimming(xsky, ysky, zsky)` line was not carried over from the
 original path.  This produced cube values 10^10x too large.  Fixed in commit
 `56c7144`.  When adding new code paths that mirror existing ones, always check
 that all transformations (dimming, extinction, etc.) are applied consistently.
+
+## Importing from packages with heavy dependencies in restricted environments
+
+When importing a module from a package (e.g., `galfit_uv.lineprofiles`), Python
+executes the package's `__init__.py` first.  If `__init__.py` imports modules
+not available in the current environment (e.g., `emcee` not in CASA), the import
+fails even though the target module has no such dependency.  Use
+`importlib.util.spec_from_file_location()` to load the module directly by file
+path, bypassing `__init__.py`:
+
+```python
+import importlib.util as ilu
+spec = ilu.spec_from_file_location('mod_name', '/path/to/module.py')
+mod = ilu.module_from_spec(spec)
+spec.loader.exec_module(mod)
+```
+
+## `galfit_uv` must be imported before numpy
+
+`galfit_uv.__init__.py` sets `OMP_NUM_THREADS=1` to prevent numpy's BLAS from
+spawning threads on every CPU core.  If numpy is imported first, it locks in the
+default thread count and each MCMC worker will compete for cores.  For the
+`_measure_size_mcmc` function in measure.py, `import galfit_uv` is the first
+import after the sys.path setup.  For line profile fitting, we bypass
+`__init__.py` entirely (see above), so this restriction does not apply.
+
+## DoublePeakAsymmetric initial guesses: avoid w_left == w_right
+
+`Gaussian_DoublePeak_Asymmetric` computes `a = (ag_left - ag_right) / (w_left**2
+- w_right**2)` which is 0/0 when `w_left == w_right`, producing NaN.  Always
+use asymmetric initial guesses (e.g., `w0*0.9` and `w0*1.1`) and set lower
+bounds `w_lower=0.1` to prevent the optimizer from reaching `w_left == w_right`.

@@ -1,5 +1,107 @@
 # Development Log
 
+## 2026-04-24: Update demo to use DoublePeak + MCMC measurement methods
+
+**What changed:**
+- `demo/config.toml`: Switched `uv_fit_method` from `"uvmodelfit"` to `"mcmc"`.
+  Fixed tab character before `tclean_niter` (caused TOML parse issue).
+- `demo/generate_report_plots.py`: Updated cleaned spectrum panel to use the
+  configured `line_fit_model` from measurements.json (Gaussian, DoublePeak, or
+  DoublePeak_Asymmetric).  Imports profiles via `importlib.util` to bypass
+  `galfit_uv.__init__`.  Updated UV amplitude plot to load MCMC fit results
+  from `fit_results.fits` when `uv_fit_method == 'mcmc'` — shows binned data +
+  model curve + fit statistics annotation.  Falls back to `fit_uv_model` path
+  for backward compatibility.
+- `galmockuv/pipeline.py`: Removed dead UV plot code (lines 111-126) that
+  checked for `uv_result` key never populated by `measure_from_ms()`.
+- `galfit_uv/models.py`: Fixed `np.trapz` → `np.trapezoid` for numpy 2.x
+  compat (CASA ships numpy 2.4.1).
+- Installed `emcee`, `dill`, `corner` into CASA standalone Python environment
+  at `/home/shangguan/Softwares/casa-6.7.3-21-py3.12.el9/`.
+- Regenerated demo output with full pipeline (A+B+C) and report plots.
+
+**Demo results (z=2.5, 600s ALMA, CO(3-2)):**
+
+| Metric | Value |
+|--------|-------|
+| Line profile | DoublePeak |
+| FWHM | 339.1 ± 5.0 km/s |
+| SNR | 48.3 |
+| UV fit | MCMC Gaussian (redchi2=0.954, BIC=1526) |
+| Size (FWHM) | 0.889" ± 0.035" (7.18 kpc) |
+| Integrated flux | 25.87 Jy km/s |
+| f_eff | 0.217 |
+
+## 2026-04-24: Integrate galfit_uv line profiles and MCMC UV fitting
+
+**What changed:**
+- `galmockuv/measure.py`: Replaced hardcoded Gaussian line fitting in
+  `_measure_fwhm_from_fits()` with configurable profile models from
+  `galfit_uv.lineprofiles`.  Supports `gaussian`, `doublepeak` (Tiley+2016
+  symmetric double-horn), and `doublepeak_asymmetric`.  FWHM is computed as
+  width at half-maximum of the peaks: `2*w + 2*sigma*sqrt(2*ln(2))` for
+  symmetric, `(wl+wr) + 2*sigma*sqrt(2*ln(2))` for asymmetric.
+- `galmockuv/measure.py`: Added `_measure_size_mcmc()` function for Bayesian UV
+  size measurement via `galfit_uv.fit_mcmc`.  Exports visibilities with
+  `galfit_uv.export_vis`, builds parametric model with `make_model_fn`, and
+  runs MCMC with `fit_mcmc`.  Supports `gaussian`, `sersic`, and `point` models.
+- `galmockuv/measure.py`: Added dispatch in `measure_from_ms()` for
+  `uv_fit_method`: `"uvmodelfit"` (CASA default) or `"mcmc"` (galfit_uv).
+- `demo/config.toml`: Added `line_fit_model`, `uv_fit_method`, `uv_fit_model`,
+  `uv_mcmc_max_steps`, `uv_mcmc_burnin`, `uv_mcmc_nwalk_factor`,
+  `uv_mcmc_n_workers`.
+- Import of `galfit_uv.lineprofiles` uses `importlib.util` to bypass
+  `galfit_uv.__init__` (which requires `emcee`, not available in CASA env).
+- Fixed `UnboundLocalError` for `vel_fit` (defined before fitting blocks).
+- Fixed duplicate keys in return dict (`integrated_flux_jy_kms`,
+  `beam_area_pix`, `beam_area_arcsec2`).
+- Fixed fragile `'galfit_uv' in dir()` check with proper try/except NameError.
+
+**Test results (dev/20260423-galfit-uv, existing MS, CASA 6.7.3):**
+
+| Setting | FWHM (km/s) | SNR | Size (kpc) | f_eff |
+|---------|-------------|-----|------------|-------|
+| Gaussian (old) | 310.3 | 48.3 | 6.36 | 0.245 |
+| DoublePeak (new) | 339.1 +/- 5.0 | 48.3 | 6.36 | 0.245 |
+
+The DoublePeak profile gives a slightly broader FWHM (339 vs 310 km/s) because
+it captures the double-horn structure from the rotating disk, while the Gaussian
+smooths over the central dip.
+
+**MCMC UV fitting:** Implemented but not yet tested (requires `emcee` which is
+not installed in the CASA standalone environment).
+
+## 2026-04-23: Rewrite plotting.py — drop SpectralCube, add masked moments
+
+**What changed:**
+- `galmockuv/plotting.py`: Full rewrite.  Replaced `SpectralCube.moment()`
+  (broken for CASA frequency-axis cubes, CLAUDE.md gotcha #1) with manual
+  `np.nansum` moment computation.  Added 3D masking (3σ spatial +
+  sigma_clipped_stats + 2-pixel binary dilation, 2σ channel mask from outer
+  20% velocity range) to prevent noisy line-free channels from corrupting
+  moment-1/2 (gotcha #4).
+- New low-level helpers: `read_fits_cube()`, `get_velocity_axis()`,
+  `compute_moment0/1/2()`, `make_signal_mask()`, `make_3d_mask()`,
+  `compute_spectrum()`, `fit_gaussian_spectrum()`.  Lifted from
+  `demo/generate_report_plots.py` with one fix: `get_velocity_axis()` now
+  takes explicit `restfreq_ghz` parameter instead of referencing module-level
+  state.
+- New high-level functions: `plot_moment_maps(fits_path, ...)` and
+  `plot_summary(fits_path, ...)`.  Both accept FITS file paths (not SpectralCube
+  objects) and support `apply_mask=True` for cleaned cubes.
+- `galmockuv/pipeline.py`: Updated Layer A call site to use
+  `plot_summary(str(cube_path), ..., apply_mask=True)` instead of
+  `plot_moment_maps(model_cube, ...)`.  Removed unused `plot_spectrum_fit`
+  import.
+- Untouched functions (no SpectralCube dependency): `plot_integrated_spectrum`,
+  `plot_uv_amplitude`, `plot_spectrum_fit`, `plot_batch_summary`.
+
+**Verification on dev/20260423-memory data:**
+- Intrinsic FWHM = 306.6 km/s (consistent with demo)
+- Cleaned FWHM = 302.7 +/- 17.8 km/s (consistent with demo)
+- 3D mask excludes 96.4% of voxels in cleaned cube
+- Cleaned moment-1/2 maps show signal only in masked central region
+
 ## 2026-04-23: Fix spectral range and spatial masking for measurements
 
 **What changed:**

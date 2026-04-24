@@ -180,7 +180,11 @@ def measure_from_ms(ms_path, config, output_dir, metadata):
           datacolumn='corrected', timebin='1e8', combine='scan',
           width=9999)
 
-    uv_result = _measure_size_from_uv(avg_ms, config, output_dir)
+    uv_fit_method = config.get('uv_fit_method', 'uvmodelfit')
+    if uv_fit_method == 'mcmc':
+        uv_result = _measure_size_mcmc(str(avg_ms), config, output_dir)
+    else:
+        uv_result = _measure_size_from_uv(avg_ms, config, output_dir)
 
     # ---- Step 4: Compute mass proxy ----
     size_kpc = uv_result.get('size_kpc', metadata.get('disk_reff_kpc', 0))
@@ -191,10 +195,12 @@ def measure_from_ms(ms_path, config, output_dir, metadata):
         'fwhm_kms': fwhm_result['fwhm_kms'],
         'fwhm_err_kms': fwhm_result.get('fwhm_err_kms', 0),
         'line_snr': fwhm_result.get('snr', 0),
+        'line_fit_model': fwhm_result.get('line_fit_model', 'gaussian'),
         'size_arcsec': uv_result.get('size_arcsec', 0),
         'size_err_arcsec': uv_result.get('size_err_arcsec', 0),
         'size_kpc': uv_result.get('size_kpc', 0),
-        'size_method': 'uv_gaussian_fit',
+        'size_method': uv_result.get('size_method', 'uv_gaussian_fit'),
+        'uv_fit_method': uv_fit_method,
         'proxy_mass_msun': mass_result['proxy_mass'],
         'true_mass_msun': mass_result['true_mass'],
         'f_eff': mass_result['f_eff'],
@@ -434,30 +440,139 @@ def _measure_fwhm_from_fits(fits_path, config):
     # Channel width (km/s) — assume uniform spacing after sort
     dv = float(np.median(np.abs(np.diff(vel)))) if len(vel) > 1 else 0.0
 
-    # Fit Gaussian
-    def gaussian(x, amp, cen, sigma):
-        return amp * np.exp(-0.5 * ((x - cen) / sigma)**2)
+    # --- Select and fit line profile ---
+    line_fit_model = config.get('line_fit_model', 'gaussian')
+
+    if line_fit_model != 'gaussian':
+        import sys as _sys
+        import importlib.util as _ilu
+        _galfit_uv_path = '/home/shangguan/Softwares/my_modules/Galfit-uv'
+        # Import lineprofiles module directly via file path to avoid
+        # galfit_uv.__init__ which requires emcee (not in CASA env).
+        _lp_spec = _ilu.spec_from_file_location(
+            'galfit_uv_lineprofiles',
+            f'{_galfit_uv_path}/galfit_uv/lineprofiles.py',
+        )
+        _lp = _ilu.module_from_spec(_lp_spec)
+        _lp_spec.loader.exec_module(_lp)
+        _Gaussian = _lp.Gaussian
+        _DoublePeak = _lp.Gaussian_DoublePeak
+        _DoublePeakAsym = _lp.Gaussian_DoublePeak_Asymmetric
 
     ipeak = np.argmax(np.abs(spec))
-    amp0 = spec[ipeak]
-    cen0 = vel[ipeak]
-    sigma0 = 100.0
+    amp0 = float(spec[ipeak])
+    cen0 = float(vel[ipeak])
 
-    try:
-        popt, pcov = curve_fit(gaussian, vel, spec,
-                               p0=[amp0, cen0, sigma0],
-                               maxfev=10000)
-        amp, cen, sigma = popt
-        perr = np.sqrt(np.diag(pcov))
-        sigma_err = perr[2]
-    except RuntimeError:
-        sigma = _estimate_sigma_halfmax(vel, spec)
-        sigma_err = 0.0
-        amp = amp0
+    # Smooth velocity grid for fit curve overlay
+    vel_fit = np.linspace(vel.min(), vel.max(), 500)
+
+    if line_fit_model == 'gaussian':
+        def profile_fn(x, a, b, c):
+            return a * np.exp(-0.5 * ((x - b) / c)**2)
+
+        sigma0 = 100.0
+        try:
+            popt, pcov = curve_fit(profile_fn, vel, spec,
+                                   p0=[amp0, cen0, sigma0],
+                                   maxfev=10000)
+            sigma = popt[2]
+            perr = np.sqrt(np.diag(pcov))
+            sigma_err = perr[2]
+        except RuntimeError:
+            sigma = _estimate_sigma_halfmax(vel, spec)
+            sigma_err = 0.0
+
+        fwhm_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
+        fwhm_err_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_err
+        spec_fit = profile_fn(vel_fit, *popt) if 'popt' in dir() else None
+
+    elif line_fit_model == 'doublepeak':
+        # Symmetric double-horn: Tiley et al. (2016) Eq. (A2)
+        # Params: ag (peak flux), ac (central flux), v0 (center),
+        #         sigma (half-Gaussian width), w (half-width of parabola)
+        w0 = max(50.0, abs(vel[ipeak] - vel[0]) * 0.15)
+        ag0 = amp0
+        ac0 = amp0 * 0.3
+        sigma0 = 80.0
+
+        try:
+            popt, pcov = curve_fit(_DoublePeak, vel, spec,
+                                   p0=[ag0, ac0, cen0, sigma0, w0],
+                                   maxfev=20000,
+                                   bounds=([0, 0, vel.min(), 1, 1],
+                                           [np.inf, np.inf, vel.max(), 500, 500]))
+            ag_fit, ac_fit, v0_fit, sigma_fit, w_fit = popt
+            perr = np.sqrt(np.diag(pcov))
+
+            # FWHM = width at half-maximum of the peaks.
+            # The profile peaks at v0 +/- w with flux ag.
+            # Half-max = ag/2.  For the outer half-Gaussian:
+            #   ag * exp(-0.5 * ((v - (v0+w)) / sigma)^2) = ag/2
+            #   => |v - (v0+w)| = sigma * sqrt(2*ln(2))
+            # FWHM = 2*w + 2*sigma*sqrt(2*ln(2))
+            fwhm_kms = 2.0 * w_fit + 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_fit
+            # Error propagation (assume uncorrelated):
+            dw = perr[4]
+            dsigma = perr[3]
+            fwhm_err_kms = np.sqrt(4 * dw**2 + 8 * np.log(2.0) * dsigma**2)
+            spec_fit = _DoublePeak(vel_fit, *popt)
+        except RuntimeError:
+            # Fall back to Gaussian
+            sigma = _estimate_sigma_halfmax(vel, spec)
+            fwhm_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
+            fwhm_err_kms = 0.0
+            spec_fit = amp0 * np.exp(-0.5 * ((vel_fit - cen0) / sigma)**2)
+
+    elif line_fit_model == 'doublepeak_asymmetric':
+        # Asymmetric double-horn: avoid w_left == w_right (causes NaN)
+        w0 = max(50.0, abs(vel[ipeak] - vel[0]) * 0.15)
+        try:
+            popt, pcov = curve_fit(_DoublePeakAsym, vel, spec,
+                                   p0=[amp0, amp0 * 0.9, amp0 * 0.3, cen0,
+                                        80.0, w0 * 0.9, w0 * 1.1],
+                                   maxfev=20000,
+                                   bounds=([0, 0, 0, vel.min(), 1, 0.1, 0.1],
+                                           [np.inf, np.inf, np.inf, vel.max(), 500, 500, 500]))
+            ag_l, ag_r, ac_f, v0_f, sigma_f, wl_f, wr_f = popt
+            perr = np.sqrt(np.diag(pcov))
+
+            # FWHM: width at half-max of each peak, summed.
+            # Left peak at v0-wl with flux ag_l: half-max crossing at
+            #   v0 - wl - sigma*sqrt(2*ln(2))
+            # Right peak at v0+wr with flux ag_r: half-max crossing at
+            #   v0 + wr + sigma*sqrt(2*ln(2))
+            hf_sigma = sigma_f * np.sqrt(2.0 * np.log(2.0))
+            fwhm_kms = (wl_f + wr_f) + 2.0 * hf_sigma
+            dwl = perr[5]
+            dwr = perr[6]
+            dsigma = perr[4]
+            fwhm_err_kms = np.sqrt(dwl**2 + dwr**2 + 8 * np.log(2.0) * dsigma**2)
+            spec_fit = _DoublePeakAsym(vel_fit, *popt)
+        except RuntimeError:
+            sigma = _estimate_sigma_halfmax(vel, spec)
+            fwhm_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
+            fwhm_err_kms = 0.0
+            spec_fit = amp0 * np.exp(-0.5 * ((vel_fit - cen0) / sigma)**2)
+    else:
+        raise ValueError(f"Unknown line_fit_model: {line_fit_model}")
+
+    # For SNR/line_mask, use the fitted center
+    if line_fit_model == 'gaussian':
         cen = cen0
-
-    fwhm_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
-    fwhm_err_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_err
+        amp = amp0
+        if 'popt' in dir() and popt is not None:
+            cen = popt[1]
+            amp = popt[0]
+    else:
+        cen = cen0
+        amp = amp0
+        if 'popt' in dir() and popt is not None:
+            if line_fit_model == 'doublepeak':
+                cen = popt[2]
+                amp = popt[0]
+            else:
+                cen = popt[3]
+                amp = max(popt[0], popt[1])
 
     # SNR: peak / rms of line-free channels
     line_mask = np.abs(vel - cen) < 3.0 * fwhm_kms
@@ -465,14 +580,17 @@ def _measure_fwhm_from_fits(fits_path, config):
     if len(line_free) > 0 and len(line_free) < len(spec):
         rms = np.std(line_free)
     else:
-        # Fall back: use edge channels (first/last 15%) as line-free estimate
         n_edge = max(1, int(0.15 * len(spec)))
         edge_channels = np.concatenate([spec[:n_edge], spec[-n_edge:]])
         rms = np.std(edge_channels)
     snr = abs(amp) / rms if rms > 0 else 0
 
-    vel_fit = np.linspace(vel.min(), vel.max(), 500)
-    spec_fit = gaussian(vel_fit, amp, cen, sigma)
+    if spec_fit is None:
+        sig_fit = fwhm_kms / 2.355
+        try:
+            spec_fit = _Gaussian(vel_fit, amp, cen, sig_fit)
+        except NameError:
+            spec_fit = amp * np.exp(-0.5 * ((vel_fit - cen) / sig_fit)**2)
 
     # Integrated flux: sum spec_jy over line channels * dv
     if has_beam and dv > 0:
@@ -484,13 +602,13 @@ def _measure_fwhm_from_fits(fits_path, config):
         'fwhm_kms': float(fwhm_kms),
         'fwhm_err_kms': float(fwhm_err_kms),
         'centroid_kms': float(cen),
+        'line_fit_model': line_fit_model,
         'snr': float(snr),
         'rms': float(rms),
         'vel': vel,
         'spec': spec,
         'vel_fit': vel_fit,
         'spec_fit': spec_fit,
-        # New keys: integrated flux and beam info
         'integrated_flux_jy_kms': integrated_flux_jy_kms,
         'beam_area_pix': float(beam_area_pix) if has_beam else 0.0,
         'beam_area_arcsec2': float(beam_area_arcsec2) if has_beam else 0.0,
@@ -628,6 +746,122 @@ def _measure_size_from_uv(avg_ms, config, output_dir):
         'uv_dist': uv_dist.tolist() if hasattr(uv_dist, 'tolist') else list(uv_dist),
         'uv_amp': amp.tolist() if hasattr(amp, 'tolist') else list(amp),
         'fit_result': fit_result,
+    }
+
+
+def _measure_size_mcmc(ms_path, config, output_dir):
+    """Measure source size from UV visibilities using MCMC (galfit_uv).
+
+    Uses galfit_uv.export_vis to extract visibilities, then
+    galfit_uv.make_model_fn + galfit_uv.fit_mcmc for Bayesian size
+    estimation.
+
+    Parameters
+    ----------
+    ms_path : str
+        Path to channel-averaged MeasurementSet.
+    config : dict
+    output_dir : Path
+
+    Returns
+    -------
+    dict with 'size_arcsec', 'size_err_arcsec', 'size_kpc', 'size_method',
+    'uv_dist', 'uv_amp', 'fit_stats'
+    """
+    import sys as _sys
+    _galfit_uv_path = '/home/shangguan/Softwares/my_modules/Galfit-uv'
+    if _galfit_uv_path not in _sys.path:
+        _sys.path.insert(0, _galfit_uv_path)
+
+    import galfit_uv
+    from galfit_uv.models import make_model_fn
+    from galfit_uv.fit import fit_mcmc
+
+    output_dir = Path(output_dir)
+    mcmc_outdir = output_dir / 'mcmc_fit'
+    mcmc_outdir.mkdir(parents=True, exist_ok=True)
+
+    uv_model = config.get('uv_fit_model', 'gaussian')
+
+    # Export visibilities
+    print(f"[measure_size_mcmc] Exporting visibilities from {ms_path}")
+    dvis, wle = galfit_uv.export_vis(ms_path, verbose=True)
+
+    # Build model
+    print(f"[measure_size_mcmc] Building {uv_model} model")
+    model_fn, param_info = make_model_fn([uv_model])
+
+    # Run MCMC
+    max_steps = int(config.get('uv_mcmc_max_steps', 5000))
+    burnin = int(config.get('uv_mcmc_burnin', 2500))
+    nwalk_factor = int(config.get('uv_mcmc_nwalk_factor', 5))
+    n_workers = int(config.get('uv_mcmc_n_workers', 4))
+    seed = int(config.get('seed', 42))
+
+    print(f"[measure_size_mcmc] Running MCMC: max_steps={max_steps}, "
+          f"burnin={burnin}, nwalk_factor={nwalk_factor}, n_workers={n_workers}")
+    result = fit_mcmc(
+        dvis, model_fn, param_info,
+        max_steps=max_steps,
+        burnin=burnin,
+        nwalk_factor=nwalk_factor,
+        outpath=str(mcmc_outdir),
+        seed=seed,
+        n_workers=n_workers,
+    )
+
+    # Extract size parameter and convert to FWHM for consistency
+    # with uvmodelfit (which reports FWHM major axis).
+    labels = result.labels
+    # Gaussian: sigma -> FWHM = 2.355*sigma
+    # Sersic: Re (half-light radius, directly comparable)
+    # Point: no size param
+    size_param_name = 'sigma' if uv_model == 'gaussian' else 'Re'
+    size_idx = None
+    for i, lab in enumerate(labels):
+        if lab == size_param_name:
+            size_idx = i
+            break
+
+    if size_idx is None:
+        print(f"[measure_size_mcmc] WARNING: no '{size_param_name}' param "
+              f"in labels {labels}")
+        size_arcsec = 0.0
+        size_err_arcsec = 0.0
+    else:
+        raw_size = float(result.bestfit[size_idx])
+        raw_size_err = float(np.std(result.samples[:, size_idx]))
+        # Convert sigma to FWHM for Gaussian models
+        fwhm_factor = 2.355 if uv_model == 'gaussian' else 1.0
+        size_arcsec = raw_size * fwhm_factor
+        size_err_arcsec = raw_size_err * fwhm_factor
+        print(f"[measure_size_mcmc] {uv_model} {size_param_name} = "
+              f"{raw_size:.4f} +/- {raw_size_err:.4f} arcsec "
+              f"-> FWHM = {size_arcsec:.4f} +/- {size_err_arcsec:.4f} arcsec")
+
+    # Convert to physical size
+    z = float(config.get('redshift', 0))
+    from astropy.cosmology import FlatLambdaCDM
+    cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
+    dl_mpc = cosmo.angular_diameter_distance(z).value
+    kpc_per_arcsec = dl_mpc * 1e3 * np.pi / (180.0 * 3600.0)
+    size_kpc = size_arcsec * kpc_per_arcsec
+
+    fit_stats = result.fit_stats if result.fit_stats else {}
+
+    # Also return binned UV data for plotting
+    uv_dist_kl = dvis.uvdist / 1e3  # convert lambda to kilo-lambda
+    amp_mjy = np.abs(dvis.vis) * 1e3
+
+    return {
+        'size_arcsec': float(size_arcsec),
+        'size_err_arcsec': float(size_err_arcsec),
+        'size_kpc': float(size_kpc),
+        'size_method': f'mcmc_{uv_model}',
+        'uv_dist': uv_dist_kl.tolist(),
+        'uv_amp': amp_mjy.tolist(),
+        'fit_stats': fit_stats,
+        'mcmc_outdir': str(mcmc_outdir),
     }
 
 

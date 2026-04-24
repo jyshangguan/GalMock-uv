@@ -56,19 +56,17 @@ def run_pipeline(config_path, layers='A', output_dir=None):
                 "current environment. Activate the alma conda environment."
             )
         from .build_cube import build_cube
-        from .plotting import (
-            plot_moment_maps, plot_integrated_spectrum,
-            plot_spectrum_fit,
-        )
+        from .plotting import plot_summary, plot_integrated_spectrum
 
         cube_path, metadata, model_cube = build_cube(config, output_dir)
         results['cube_path'] = str(cube_path)
         results['metadata'] = metadata
 
+        plot_summary(str(cube_path), output_dir, source_id, apply_mask=True,
+                     restfreq_ghz=config.get('co_restfreq_ghz'))
+
         vel_axis = model_cube.spectral_axis.to_value('km/s')
         spec = model_cube.sum(axis=(1, 2)).value
-
-        plot_moment_maps(model_cube, output_dir, source_id)
         plot_integrated_spectrum(vel_axis, spec, output_dir, source_id)
 
         print(f"\n[Layer A complete] Intrinsic cube: {cube_path}")
@@ -105,27 +103,9 @@ def run_pipeline(config_path, layers='A', output_dir=None):
         metadata = results.get('metadata') or load_metadata(output_dir)
 
         from .measure import measure_from_ms
-        from .plotting import plot_uv_amplitude
 
         measurements = measure_from_ms(ms_path, config, output_dir, metadata)
         results['measurements'] = measurements
-
-        # UV amplitude plot
-        uv_result = measurements.get('uv_result', {})
-        if 'uv_dist' in uv_result and 'uv_amp' in uv_result:
-            import numpy as np
-            fit_plot = {
-                'uv_model': np.array(uv_result['uv_amp']),
-            }
-            # Compute asymmetric error as average of upper/lower
-            plot_uv_amplitude(
-                uv_result['uv_dist'],
-                uv_result['uv_amp'],
-                np.zeros_like(uv_result['uv_amp']),
-                fit_plot,
-                output_dir,
-                source_id,
-            )
 
         print(f"\n[Layer C complete] Measurements saved to {output_dir}")
 

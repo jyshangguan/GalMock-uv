@@ -18,9 +18,9 @@ outputs FWHM, source size, and dynamical mass proxy with efficiency factor
 | `galmockuv/io.py` | Config loading (TOML/YAML), metadata/JSON I/O |
 | `galmockuv/build_cube.py` | Layer A: DysmalPy galaxy model -> intrinsic FITS cube |
 | `galmockuv/simulate.py` | Layer B: CASA `simobserve` -> MeasurementSet |
-| `galmockuv/measure.py` | Layer C: `tclean` + `uvmodelfit` -> measurements |
+| `galmockuv/measure.py` | Layer C: `tclean` + line fitting + UV size measurement |
 | `galmockuv/pipeline.py` | Orchestration (`run_pipeline`) |
-| `galmockuv/plotting.py` | Diagnostic plots (moment maps, spectra, UV) |
+| `galmockuv/plotting.py` | Diagnostic plots (FITS-based masked moments, spectra, UV) |
 | `galmockuv/casa_utils.py` | Vendored UV analysis utilities (`plot_uvbins`, `fit_uv_model`) |
 
 ## Environment
@@ -67,15 +67,20 @@ inclination_deg = 45.0
 totaltime = "600s"
 antennalist = "alma.cycle4.2"
 channel_width_kms = 10.0
-spectral_n_sigma = 5          # cover ±5σ of the line
+line_window_kms = 500.0       # expected max observed line FWHM
 spectral_n_linefree = 10      # extra line-free channels per side for RMS
 oversample = 3                # DysmalPy spatial oversampling factor
+line_fit_model = "doublepeak" # "gaussian", "doublepeak", or "doublepeak_asymmetric"
+uv_fit_method = "uvmodelfit"  # "uvmodelfit" (CASA) or "mcmc" (galfit_uv, needs emcee)
+uv_fit_model = "gaussian"     # UV model for mcmc: "gaussian", "sersic", or "point"
 ```
 
-The spectral range (`nchan`, `velocity_start_kms`) is auto-computed from
-`intrinsic_sigma_kms`, `spectral_n_sigma`, `spectral_n_linefree`, and
-`channel_width_kms`.  Explicit `nchan` and `velocity_start_kms` can be
-provided to override the auto-computation.
+The spectral range (`nchan`, `velocity_start_kms`) is auto-computed.  When
+`line_window_kms` is set (recommended), the range is
+`line_window_kms/2 + spectral_n_linefree * channel_width_kms` per side.
+Otherwise it falls back to
+`spectral_n_sigma * intrinsic_sigma_kms + spectral_n_linefree * channel_width_kms`.
+Explicit `nchan` and `velocity_start_kms` can be provided to override either.
 
 See `demo/config.toml` for all parameters.  The `io.py` module has a
 `_flatten_config()` fallback for nested TOML tables.
@@ -110,6 +115,12 @@ See `demo/config.toml` for all parameters.  The `io.py` module has a
    `is_dysmalpy_env()` before running each layer.  Running Layer A in CASA or
    Layer B+C without CASA will raise a clear error.
 
+7. **galfit_uv import order**: `import galfit_uv` must appear before `import numpy`
+   (the package sets `OMP_NUM_THREADS=1`).  For line profile fitting only
+   (`line_fit_model != 'gaussian'`), measure.py bypasses `galfit_uv.__init__`
+   via `importlib.util` to avoid the `emcee` dependency in CASA.  For MCMC UV
+   fitting (`uv_fit_method='mcmc'`), `emcee` must be installed.
+
 ## Quick Reference
 
 | Function | Description |
@@ -125,6 +136,13 @@ See `demo/config.toml` for all parameters.  The `io.py` module has a
 | `simulate_alma(cube_path, config, output_dir)` | Layer B: simulate ALMA |
 | `measure_from_ms(ms_path, config, output_dir, metadata)` | Layer C: measure from MS |
 | `measure_from_imaged_cube(cube_path, config, output_dir, metadata)` | Layer C alt: measure from FITS |
+| `plot_summary(fits_path, output_dir, source_id, apply_mask=False, ...)` | 2x2 summary (m0, m1, m2, spectrum+fit) |
+| `plot_moment_maps(fits_path, output_dir, source_id, apply_mask=False, ...)` | Individual moment map figures |
+| `read_fits_cube(path)` | Read FITS cube → (data_3d, header, pixscale, extent) |
+| `get_velocity_axis(header, restfreq_ghz=None)` | Build km/s velocity axis from FITS header |
+| `make_signal_mask(m0, n_sigma=3.0, dilate=2)` | Spatial mask from sigma_clipped_stats + dilation |
+| `make_3d_mask(data_3d, vel, spatial_mask, channel_sigma=2.0)` | 3D channel+spatial mask |
+| `compute_moment0/1/2(data_3d, vel, mask=None)` | Manual moment computation with optional 3D mask |
 | `plot_uvbins(vis, ...)` | Binned UV amplitude plot with fit overlay |
 | `fit_uv_model(vis, ...)` | Gaussian UV model fit via `uvmodelfit` |
 
