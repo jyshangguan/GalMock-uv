@@ -8,14 +8,14 @@ description: >
 
 # Layer C: Measure Observables
 
-Image the MeasurementSet with CASA `tclean`, fit the UV visibility with
-`uvmodelfit`, and measure CO line FWHM, source size, and dynamical mass proxy
-with efficiency factor *f*_eff.
+Image the MeasurementSet with CASA `tclean`, fit the UV visibility model
+(`uvmodelfit` or MCMC), and measure CO line FWHM, source size, and dynamical
+mass proxy with efficiency factor *f*_eff.
 
 ## Prerequisites
 
 - **Environment**: CASA (`casatools`, `casatasks`).  Layer B must have produced
-  a MeasurementSet first.
+  a MeasurementSet first.  MCMC UV fitting additionally requires `emcee`.
 - The `galmockuv` package must be importable.
 
 ## Commands
@@ -51,11 +51,12 @@ from galmockuv import load_metadata, load_json
 meta = load_metadata("output/my_galaxy")
 meas = load_json("output/my_galaxy", "measurements.json")
 
-print(f"FWHM       = {meas['fwhm_kms']:.1f} +/- {meas['fwhm_err_kms']:.1f} km/s")
+print(f"FWHM       = {meas['fwhm_kms']:.1f} km/s")
 print(f"Size       = {meas['size_kpc']:.1f} kpc")
+print(f"Size err   = {meas['size_err_arcsec']:.3f} arcsec")
+print(f"Size method= {meas['size_method']}")
 print(f"SNR        = {meas['line_snr']:.1f}")
 print(f"Proxy mass = {meas['proxy_mass_msun']:.2e} Msun")
-print(f"True mass  = {meas['true_mass_msun']:.2e} Msun")
 print(f"f_eff      = {meas['f_eff']:.3f}")
 ```
 
@@ -73,16 +74,25 @@ inclination, and disk-to-halo mass ratio.
 | < 0.1 | Strong pressure support or beam dilution |
 | > 0.5 | Check config — may be face-on or unusually massive halo |
 
-### FWHM recovery
+### FWHM measurement
 
-The measured FWHM (Gaussian fit to spatially-masked integrated spectrum) should
-recover the intrinsic FWHM at ~95--100% for SNR > 10.  Spatial masking
-(1.5σ on moment-0 via MAD noise estimation) excludes noise-only edge pixels
-from the integrated spectrum.
+The FWHM is measured via the non-parametric half-maximum method: find the peak
+flux, select channels with flux >= half of peak, and compute the velocity span.
+For cleaned (noisy) spectra, a line profile model (Gaussian, DoublePeak, or
+DoublePeakAsymmetric) is first fit for smoothing, then `fwhm_half_max` is
+applied to the fitted model curve.  For intrinsic (noiseless) spectra, the
+half-max is applied directly.  Spatial masking (1.5σ on moment-0 via MAD noise
+estimation) excludes noise-only edge pixels from the integrated spectrum.
 
 ### Size measurement
 
-The UV-fit size comes from `uvmodelfit` on channel-averaged visibilities.
+Two methods are available, selected by `uv_fit_method`:
+- **`uvmodelfit`** (default): CASA's `uvmodelfit` on channel-averaged visibilities.
+  Fast but provides only a simple uncertainty estimate.
+- **`mcmc`**: Bayesian MCMC via `galfit_uv.fit_mcmc`.  Produces full posterior
+  distributions with parameter correlations (corner plot), at the cost of
+  longer runtime and requiring `emcee`.
+
 For marginally resolved sources (θ_source < beam), the uncertainty is large
 and the measurement may be a lower limit.
 
@@ -94,7 +104,9 @@ and the measurement may be a lower limit.
 | `uv_bin_width_klambda` | 50.0 | UV bin width |
 | `uv_max_klambda` | 3000.0 | Maximum UV distance for fitting |
 | `size_fit_model` | `"G"` | UV fit model type (Gaussian) |
-| `line_fit_model` | `"gaussian"` | Line profile fit model |
+| `line_fit_model` | `"gaussian"` | Line profile: `"gaussian"`, `"doublepeak"`, `"doublepeak_asymmetric"` |
+| `uv_fit_method` | `"uvmodelfit"` | UV size method: `"uvmodelfit"` (CASA) or `"mcmc"` (galfit_uv) |
+| `uv_fit_model` | `"gaussian"` | UV model for MCMC: `"gaussian"`, `"sersic"`, or `"point"` |
 | `tclean_niter` | 1000 | tclean minor cycle iterations |
 | `tclean_threshold` | `"0mJy"` | tclean stopping threshold |
 | `measure_spatial_sigma` | 1.5 | Spatial mask threshold for FWHM spectrum |
@@ -107,10 +119,16 @@ and the measurement may be a lower limit.
 | `measurement_details.yaml` | Full measurement details |
 | `{source_id}.cube.image.fits` | Cleaned image cube |
 | `{source_id}.cube.image/` | CASA image directory |
+| `mcmc_fit/corner_plot.png` | MCMC posterior corner plot (if `uv_fit_method='mcmc'`) |
+| `mcmc_fit/chains.png` | MCMC chain traces (if `uv_fit_method='mcmc'`) |
 
 ## Key Functions
 
 | Function | Description |
 |----------|-------------|
+| `fwhm_half_max(vel, flux)` | Non-parametric FWHM via half-maximum width |
 | `measure_from_ms(ms_path, config, output_dir, metadata)` | Full Layer C from MS |
 | `measure_from_imaged_cube(cube_path, config, output_dir, metadata)` | Layer C from existing FITS |
+| `_measure_fwhm_from_cube(cube, config)` | FWHM from intrinsic cube (direct half-max) |
+| `_measure_fwhm_from_fits(fits_path, config)` | FWHM from cleaned cube (model fit + half-max) |
+| `_measure_size_mcmc(ms_path, config, output_dir)` | MCMC UV size fitting |

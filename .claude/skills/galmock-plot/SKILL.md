@@ -23,7 +23,7 @@ which is broken for CASA frequency-axis cubes).
 ```python
 from galmockuv.plotting import plot_summary, plot_moment_maps
 
-# 2x2 summary: moment-0, moment-1, moment-2, spectrum + Gaussian fit
+# 2x2 summary: moment-0, moment-1, moment-2, spectrum + FWHM
 plot_summary("output/my_galaxy/intrinsic_cube.fits",
              "output/my_galaxy", "my_galaxy", apply_mask=False,
              restfreq_ghz=345.796)
@@ -52,6 +52,12 @@ Without masking, moment-1 includes noisy line-free channels and produces garbage
 velocities at edge pixels.
 
 ## Key Functions
+
+### FWHM measurement
+
+| Function | Description |
+|----------|-------------|
+| `fwhm_half_max(vel, flux)` | Non-parametric FWHM via half-maximum width (in `measure.py`) |
 
 ### FITS I/O and masking
 
@@ -87,15 +93,13 @@ velocities at edge pixels.
 
 ## Report Plots (demo)
 
-The demo report script generates 4 publication-quality figures from the full
-pipeline output.  Requires CASA (uses `casatools.ms` for visibility data):
+The demo report script generates 5 publication-quality figures from the full
+pipeline output.  Runs with regular Python — CASA-only figures (visibility data,
+UV fit) are skipped gracefully when `casatools` is unavailable:
 
 ```bash
-casa --nologger --nogui -c "
-import sys, pathlib
-exec(open('demo/generate_report_plots.py').read(), {'__name__': '__main__', '__file__': 'demo/generate_report_plots.py', '__builtins__': __builtins__, 'sys': sys, 'pathlib': pathlib})
-"
+python demo/run_report_plots.py
 ```
 
 Output (in `demo/figs/`): `intrinsic_summary.png`, `visibility_data.png`,
-`cleaned_summary.png`, `uv_amplitude_fit.png`.
+`cleaned_summary.png`, `uv_amplitude_fit.png`, `corner_plot.png`.

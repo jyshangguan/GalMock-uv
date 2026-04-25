@@ -107,10 +107,10 @@ Key output fields:
 
 | Field | Description |
 |-------|-------------|
-| `fwhm_kms` | CO line FWHM from Gaussian fit to cleaned spectrum |
-| `fwhm_err_kms` | FWHM uncertainty |
+| `fwhm_kms` | CO line FWHM via non-parametric half-max method |
+| `fwhm_err_kms` | FWHM uncertainty (0 for non-parametric) |
 | `line_snr` | Peak line flux / rms of line-free channels |
-| `size_arcsec` | Source angular size from `uvmodelfit` |
+| `size_arcsec` | Source angular size from `uvmodelfit` or MCMC |
 | `size_kpc` | Physical size (arcsec * kpc/arcsec) |
 | `proxy_mass_msun` | FWHM^2 * D / G |
 | `true_mass_msun` | Input baryonic mass |
@@ -202,8 +202,9 @@ galmockuv/
 A complete working demo is in `demo/`:
 
 - `demo/config.toml` -- config for a z=2.5 galaxy
-- `demo/run_demo.py` -- runs the pipeline and checks robustness
-- `demo/generate_report_plots.py` -- generates publication-quality moment maps
+- `demo/run_layer_a.py` -- Layer A script (DysmalPy env)
+- `demo/run_layer_bc.py` -- Layers B+C script (CASA env)
+- `demo/run_report_plots.py` -- generates publication-quality figures (any Python env)
 - `demo/demo_report.md` -- validation report with all figures
 - `demo/output/z25_demo/` -- demo output files
 
@@ -211,13 +212,13 @@ To reproduce:
 
 ```bash
 # 1. Layer A (DysmalPy env)
-python galmockuv.py demo/config.toml --layers A
+python demo/run_layer_a.py
 
 # 2. Layers B+C (CASA env)
-casa --nologger --nogui -c "exec(open('galmockuv.py').read())" demo/config.toml --layers B+C
+casa --nologger --nogui -c "exec(open('demo/run_layer_bc.py').read())"
 
-# 3. Generate report plots (standard Python with numpy/matplotlib)
-python demo/generate_report_plots.py
+# 3. Generate report plots (any Python env)
+python demo/run_report_plots.py
 ```
 
 The demo produces:
@@ -227,7 +228,8 @@ The demo produces:
 | `intrinsic_summary.png` | Moment 0, 1, 2 + spectrum of the intrinsic cube |
 | `visibility_data.png` | Visibility amplitudes and uv-coverage |
 | `cleaned_summary.png` | Moment 0, 1, 2 + spectrum of the cleaned cube |
-| `uv_amplitude_fit.png` | Binned visibilities with Gaussian model fit |
+| `uv_amplitude_fit.png` | Binned visibilities with model fit |
+| `corner_plot.png` | MCMC posterior corner plot |
 | `measurements.json` | Quantitative measurements (FWHM, size, mass, f_eff) |
 
 ## How f_eff is Defined
