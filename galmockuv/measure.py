@@ -14,12 +14,34 @@ import numpy as np
 from pathlib import Path
 
 from galmockuv.io import save_json, load_metadata, save_metadata
-from galmockuv.casa_utils import average_uvdata, fit_uv_model, get_beam_from_fits, compute_beam_area_pix
 
 
 # Physical constant
 G_PC = 4.301e-3    # pc (km/s)^2 / M_sun
 G_KPC = G_PC / 1e3  # kpc (km/s)^2 / M_sun
+
+
+def fwhm_half_max(vel, flux):
+    """Non-parametric FWHM: full width at half maximum.
+
+    Parameters
+    ----------
+    vel : array-like
+        Velocity axis (km/s).
+    flux : array-like
+        Flux values.
+
+    Returns
+    -------
+    float
+        FWHM in km/s, or 0.0 if fewer than 2 channels above half-max.
+    """
+    peak = np.max(flux)
+    half_max = 0.5 * peak
+    indices = np.where(flux >= half_max)[0]
+    if len(indices) < 2:
+        return 0.0
+    return float(vel[indices[-1]] - vel[indices[0]])
 
 
 def measure_from_imaged_cube(cube_path, config, output_dir, metadata):
@@ -242,7 +264,7 @@ def measure_from_ms(ms_path, config, output_dir, metadata):
 # ======================================================================
 
 def _measure_fwhm_from_cube(cube, config):
-    """Measure FWHM from a SpectralCube.
+    """Measure FWHM from a SpectralCube using non-parametric half-max method.
 
     Parameters
     ----------
@@ -262,34 +284,11 @@ def _measure_fwhm_from_cube(cube, config):
     vel = vel[idx]
     spec = spec[idx]
 
-    # Fit Gaussian to the spectrum
-    from scipy.optimize import curve_fit
-
-    def gaussian(x, amp, cen, sigma):
-        return amp * np.exp(-0.5 * ((x - cen) / sigma)**2)
-
-    # Initial guesses
     ipeak = np.argmax(spec)
-    amp0 = spec[ipeak]
-    cen0 = vel[ipeak]
-    sigma0 = 100.0  # km/s initial guess
+    amp = spec[ipeak]
+    cen = vel[ipeak]
 
-    try:
-        popt, pcov = curve_fit(gaussian, vel, spec,
-                               p0=[amp0, cen0, sigma0],
-                               maxfev=10000)
-        amp, cen, sigma = popt
-        perr = np.sqrt(np.diag(pcov))
-        sigma_err = perr[2]
-    except RuntimeError:
-        # Fall back to simple half-max width
-        sigma = _estimate_sigma_halfmax(vel, spec)
-        sigma_err = 0.0
-        amp = amp0
-        cen = cen0
-
-    fwhm_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma  # FWHM = 2.355 * sigma
-    fwhm_err_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_err
+    fwhm_kms = fwhm_half_max(vel, spec)
 
     # SNR: peak / rms of line-free channels
     line_mask = np.abs(vel - cen) < 3.0 * fwhm_kms
@@ -301,33 +300,16 @@ def _measure_fwhm_from_cube(cube, config):
         rms = 0
         snr = 0
 
-    # Smooth fit curve
-    vel_fit = np.linspace(vel.min(), vel.max(), 500)
-    spec_fit = gaussian(vel_fit, amp, cen, sigma)
-
     return {
         'fwhm_kms': float(fwhm_kms),
-        'fwhm_err_kms': float(fwhm_err_kms),
+        'fwhm_err_kms': 0.0,
         'centroid_kms': float(cen),
         'snr': float(snr),
         'rms': float(rms),
         'vel': vel,
         'spec': spec,
-        'vel_fit': vel_fit,
-        'spec_fit': spec_fit,
     }
 
-
-def _estimate_sigma_halfmax(vel, spec):
-    """Estimate sigma from half-maximum width."""
-    ipeak = np.argmax(spec)
-    half_max = 0.5 * spec[ipeak]
-    above = spec >= half_max
-    indices = np.where(above)[0]
-    if len(indices) < 2:
-        return 100.0
-    fwhm = vel[indices[-1]] - vel[indices[0]]
-    return fwhm / 2.355
 
 
 def _measure_fwhm_from_fits(fits_path, config):
@@ -354,6 +336,7 @@ def _measure_fwhm_from_fits(fits_path, config):
     header = hdul[0].header
 
     # Read beam info for Jy/beam -> Jy conversion
+    from galmockuv.casa_utils import compute_beam_area_pix
     try:
         beam_area_pix, beam_area_arcsec2, bmaj_arcsec, bmin_arcsec = \
             compute_beam_area_pix(hdul)
@@ -475,16 +458,16 @@ def _measure_fwhm_from_fits(fits_path, config):
             popt, pcov = curve_fit(profile_fn, vel, spec,
                                    p0=[amp0, cen0, sigma0],
                                    maxfev=10000)
-            sigma = popt[2]
-            perr = np.sqrt(np.diag(pcov))
-            sigma_err = perr[2]
+            spec_fit = profile_fn(vel_fit, *popt)
         except RuntimeError:
-            sigma = _estimate_sigma_halfmax(vel, spec)
-            sigma_err = 0.0
+            popt = None
+            spec_fit = None
 
-        fwhm_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
-        fwhm_err_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_err
-        spec_fit = profile_fn(vel_fit, *popt) if 'popt' in dir() else None
+        if spec_fit is not None:
+            fwhm_kms = fwhm_half_max(vel_fit, spec_fit)
+        else:
+            fwhm_kms = fwhm_half_max(vel, spec)
+        fwhm_err_kms = 0.0
 
     elif line_fit_model == 'doublepeak':
         # Symmetric double-horn: Tiley et al. (2016) Eq. (A2)
@@ -501,27 +484,13 @@ def _measure_fwhm_from_fits(fits_path, config):
                                    maxfev=20000,
                                    bounds=([0, 0, vel.min(), 1, 1],
                                            [np.inf, np.inf, vel.max(), 500, 500]))
-            ag_fit, ac_fit, v0_fit, sigma_fit, w_fit = popt
-            perr = np.sqrt(np.diag(pcov))
-
-            # FWHM = width at half-maximum of the peaks.
-            # The profile peaks at v0 +/- w with flux ag.
-            # Half-max = ag/2.  For the outer half-Gaussian:
-            #   ag * exp(-0.5 * ((v - (v0+w)) / sigma)^2) = ag/2
-            #   => |v - (v0+w)| = sigma * sqrt(2*ln(2))
-            # FWHM = 2*w + 2*sigma*sqrt(2*ln(2))
-            fwhm_kms = 2.0 * w_fit + 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_fit
-            # Error propagation (assume uncorrelated):
-            dw = perr[4]
-            dsigma = perr[3]
-            fwhm_err_kms = np.sqrt(4 * dw**2 + 8 * np.log(2.0) * dsigma**2)
             spec_fit = _DoublePeak(vel_fit, *popt)
-        except RuntimeError:
-            # Fall back to Gaussian
-            sigma = _estimate_sigma_halfmax(vel, spec)
-            fwhm_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
+            fwhm_kms = fwhm_half_max(vel_fit, spec_fit)
             fwhm_err_kms = 0.0
-            spec_fit = amp0 * np.exp(-0.5 * ((vel_fit - cen0) / sigma)**2)
+        except RuntimeError:
+            fwhm_kms = fwhm_half_max(vel, spec)
+            fwhm_err_kms = 0.0
+            spec_fit = None
 
     elif line_fit_model == 'doublepeak_asymmetric':
         # Asymmetric double-horn: avoid w_left == w_right (causes NaN)
@@ -533,26 +502,13 @@ def _measure_fwhm_from_fits(fits_path, config):
                                    maxfev=20000,
                                    bounds=([0, 0, 0, vel.min(), 1, 0.1, 0.1],
                                            [np.inf, np.inf, np.inf, vel.max(), 500, 500, 500]))
-            ag_l, ag_r, ac_f, v0_f, sigma_f, wl_f, wr_f = popt
-            perr = np.sqrt(np.diag(pcov))
-
-            # FWHM: width at half-max of each peak, summed.
-            # Left peak at v0-wl with flux ag_l: half-max crossing at
-            #   v0 - wl - sigma*sqrt(2*ln(2))
-            # Right peak at v0+wr with flux ag_r: half-max crossing at
-            #   v0 + wr + sigma*sqrt(2*ln(2))
-            hf_sigma = sigma_f * np.sqrt(2.0 * np.log(2.0))
-            fwhm_kms = (wl_f + wr_f) + 2.0 * hf_sigma
-            dwl = perr[5]
-            dwr = perr[6]
-            dsigma = perr[4]
-            fwhm_err_kms = np.sqrt(dwl**2 + dwr**2 + 8 * np.log(2.0) * dsigma**2)
             spec_fit = _DoublePeakAsym(vel_fit, *popt)
-        except RuntimeError:
-            sigma = _estimate_sigma_halfmax(vel, spec)
-            fwhm_kms = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
+            fwhm_kms = fwhm_half_max(vel_fit, spec_fit)
             fwhm_err_kms = 0.0
-            spec_fit = amp0 * np.exp(-0.5 * ((vel_fit - cen0) / sigma)**2)
+        except RuntimeError:
+            fwhm_kms = fwhm_half_max(vel, spec)
+            fwhm_err_kms = 0.0
+            spec_fit = None
     else:
         raise ValueError(f"Unknown line_fit_model: {line_fit_model}")
 
@@ -586,11 +542,7 @@ def _measure_fwhm_from_fits(fits_path, config):
     snr = abs(amp) / rms if rms > 0 else 0
 
     if spec_fit is None:
-        sig_fit = fwhm_kms / 2.355
-        try:
-            spec_fit = _Gaussian(vel_fit, amp, cen, sig_fit)
-        except NameError:
-            spec_fit = amp * np.exp(-0.5 * ((vel_fit - cen) / sig_fit)**2)
+        spec_fit = np.zeros_like(vel_fit)
 
     # Integrated flux: sum spec_jy over line channels * dv
     if has_beam and dv > 0:
@@ -689,6 +641,8 @@ def _measure_size_from_uv(avg_ms, config, output_dir):
 
     print(f"[measure_size_uv] Binning UV data: {len(uv_bins)-1} bins, "
           f"0-{uv_max} klambda, width={uv_bin_width}")
+
+    from galmockuv.casa_utils import average_uvdata, fit_uv_model
 
     # Average visibility amplitudes
     # Note: split() renames the selected column to 'data' in the output MS

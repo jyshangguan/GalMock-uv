@@ -268,6 +268,8 @@ def compute_spectrum(data_3d, vel):
     return vel[idx], spec[idx]
 
 
+from .measure import fwhm_half_max
+
 def fit_gaussian_spectrum(vel, spec):
     """Fit a Gaussian to a spectrum.
 
@@ -431,28 +433,21 @@ def plot_summary(fits_path, output_dir, source_id, apply_mask=False,
     ax.set_xlabel(r'$\Delta$RA (")')
     ax.set_ylabel(r'$\Delta$Dec (")')
 
-    # Bottom-right panel: spectrum + Gaussian fit (or custom)
+    # Bottom-right panel: spectrum + FWHM (or custom)
     ax = axes[1, 1]
     if extra_panel_fn is not None:
         extra_panel_fn(ax)
     else:
         vel_s, spec_s = compute_spectrum(data, vel)
-        fwhm, fwhm_err, amp, cen, sigma = fit_gaussian_spectrum(vel_s, spec_s)
+        fwhm = fwhm_half_max(vel_s, spec_s)
 
-        vel_fit = np.linspace(vel_s.min(), vel_s.max(), 500)
-        spec_fit = _gaussian(vel_fit, amp, cen, sigma)
-        ax.plot(vel_s, spec_s, 'k-', lw=1, label='Data')
-        ax.plot(vel_fit, spec_fit, 'r-', lw=2, label='Fit')
-        ax.axvline(cen, color='gray', ls=':', lw=1)
-        txt = f"FWHM = {fwhm:.1f} km/s"
-        if fwhm_err > 0:
-            txt += f" $\\pm$ {fwhm_err:.1f}"
-        ax.text(0.05, 0.95, txt, transform=ax.transAxes, va='top',
-                fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+        ax.plot(vel_s, spec_s, 'k-', lw=1)
+        ax.text(0.05, 0.95, f"FWHM = {fwhm:.1f} km/s",
+                transform=ax.transAxes, va='top', fontsize=12,
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
         ax.set_xlabel('Velocity (km/s)')
         ax.set_ylabel('Flux')
         ax.set_title('Integrated Spectrum')
-        ax.legend()
         ax.axhline(0, color='gray', ls='--', lw=0.5)
 
     fig.suptitle(f'Mock Summary - {source_id}', fontsize=14, y=0.98)

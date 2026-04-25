@@ -1,5 +1,32 @@
 # Development Log
 
+## 2026-04-25: Replace Gaussian FWHM with non-parametric half-max method
+
+**What changed:**
+- `galmockuv/measure.py`: Added `fwhm_half_max(vel, flux)` helper. Replaced all
+  Gaussian/parametric FWHM derivation with non-parametric half-max width.
+  `_measure_fwhm_from_cube()` now uses direct half-max on intrinsic spectrum
+  (no fitting). `_measure_fwhm_from_fits()` still fits a model (Gaussian/DoublePeak)
+  for smoothing, but derives FWHM via `fwhm_half_max()` on the fitted model curve.
+  Removed `_estimate_sigma_halfmax()`.  Moved CASA imports (`casa_utils`) from
+  module-level to inside functions, enabling safe cross-environment import of
+  `fwhm_half_max` from `measure.py`.
+- `galmockuv/plotting.py`: Imports `fwhm_half_max` from `measure.py` (no duplicate).
+  Simplified `plot_summary()` bottom-right panel: removed Gaussian fit overlay,
+  now shows raw spectrum + FWHM text box only.
+- `demo/run_report_plots.py` (renamed from `generate_report_plots.py`): Removed
+  `fit_gaussian_spectrum()` duplicate.  Simplified intrinsic panel (no model fitting).
+  Updated cleaned panel to use `fwhm_half_max()` on fitted model curve.  Wrapped
+  CASA imports in try/except so the script runs with regular Python — CASA-only
+  figures (visibility data, UV fit) are skipped gracefully when `casatools` is
+  unavailable.
+- `demo/run_layer_a.py`, `demo/run_layer_bc.py`: New demo scripts (replaced
+  `run_demo.py`). One script per environment for CASA compatibility.
+- `CLAUDE.md`: Added `fwhm_half_max` to quick reference. Updated usage docs.
+- `demo/demo_report.md`: Updated running instructions.
+
+**Results:** Intrinsic FWHM 340.8 km/s (was 308), cleaned FWHM 331.1 km/s (was 339.1).
+
 ## 2026-04-24: Update demo to use DoublePeak + MCMC measurement methods
 
 **What changed:**

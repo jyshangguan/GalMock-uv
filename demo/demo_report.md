@@ -2,7 +2,7 @@
 
 ## Overview
 
-This report validates the `galmockuv` package by running the full three-layer pipeline on a realistic example galaxy at *z* = 2.5. The pipeline uses **DysmalPy** (Layer A) to build an intrinsic CO line cube, **CASA `simobserve`** (Layer B) to simulate ALMA interferometric observations, and custom measurement code (Layer C) to extract FWHM, source size, and dynamical mass proxy. The results are compared to the previous standalone-script pipeline to confirm the package refactor introduced no regressions.
+This report validates the `galmockuv` package by running the full three-layer pipeline on a realistic example galaxy at *z* = 2.5. The pipeline uses **DysmalPy** (Layer A) to build an intrinsic CO line cube, **CASA `simobserve`** (Layer B) to simulate ALMA interferometric observations, and custom measurement code (Layer C) to extract FWHM, source size, and dynamical mass proxy.
 
 All outputs are in `demo/output/z25_demo/`.
 
@@ -26,15 +26,21 @@ All outputs are in `demo/output/z25_demo/`.
 
 ## Running the Demo
 
-```bash
-# Layer A (DysmalPy environment):
-python galmockuv.py demo/config.toml --layers A
+Two scripts are provided — one per environment.  Run from the repository root.
 
-# Layers B+C (CASA environment):
-casa --nologger --nogui -c "exec(open('galmockuv.py').read())" demo/config.toml --layers B+C
+```bash
+# Step 1 — Layer A (DysmalPy / alma conda env):
+python demo/run_layer_a.py
+
+# Step 2 — Layers B+C (CASA):
+casa --nologger --nogui -c "exec(open('demo/run_layer_bc.py').read())"
+
+# Step 3 (optional) — Generate report plots (any Python env):
+python demo/run_report_plots.py
 ```
 
-The demo uses the TOML config at `demo/config.toml`. The package also supports YAML configs for backward compatibility.
+The demo uses the TOML config at `demo/config.toml`.  All outputs go to
+`demo/output/z25_demo/`.
 
 ---
 
@@ -46,11 +52,11 @@ The galaxy is modeled as a rotating exponential disk embedded in an NFW dark mat
 
 ### Results
 
-The intrinsic cube produces a line FWHM of **308 km/s**, reflecting the combined rotational broadening (3 kpc disk at 45° inclination) and turbulent dispersion.
+The intrinsic cube produces a line FWHM of **340.8 km/s**, reflecting the combined rotational broadening (3 kpc disk at 45° inclination) and turbulent dispersion.
 
-![Intrinsic cube summary — moment 0, moment 1, moment 2, and integrated spectrum with Gaussian fit.](figs/intrinsic_summary.png)
+![Intrinsic cube summary — moment 0, moment 1, moment 2, and integrated spectrum.](figs/intrinsic_summary.png)
 
-**Figure 1.** Intrinsic model diagnostics. *Top-left:* Moment-0 (integrated CO flux) showing a compact disk. *Top-right:* Moment-1 velocity field revealing the rotation pattern (spider diagram). *Bottom-left:* Moment-2 velocity dispersion showing elevated central dispersion from rotation shear. *Bottom-right:* Integrated spectrum with Gaussian fit, FWHM = 308 km/s.
+**Figure 1.** Intrinsic model diagnostics. *Top-left:* Moment-0 (integrated CO flux) showing a compact disk. *Top-right:* Moment-1 velocity field revealing the rotation pattern (spider diagram). *Bottom-left:* Moment-2 velocity dispersion showing elevated central dispersion from rotation shear. *Bottom-right:* Integrated spectrum with non-parametric FWHM = 340.8 km/s.
 
 ---
 
@@ -74,7 +80,7 @@ The resulting MS is 681 MB. The uv-coverage extends to ~89 kλ, giving a synthes
 
 ### Method
 
-The MS is imaged with CASA `tclean` (natural weighting, 1000 iterations). The FWHM is measured by Gaussian-fitting the integrated spectrum of the cleaned cube. The source size is measured by fitting a circular Gaussian model to the channel-averaged visibility amplitudes via `uvmodelfit`. The dynamical mass proxy is computed as:
+The MS is imaged with CASA `tclean` (natural weighting, 1000 iterations). The FWHM is measured via the non-parametric half-maximum method on the integrated spectrum. The source size is measured by MCMC fitting of a Gaussian model to the channel-averaged visibility amplitudes. The dynamical mass proxy is computed as:
 
 *M*<sub>proxy</sub> = FWHM² × *D* / *G*
 
@@ -82,11 +88,15 @@ The MS is imaged with CASA `tclean` (natural weighting, 1000 iterations). The FW
 
 ![Cleaned image moments and spectrum.](figs/cleaned_summary.png)
 
-**Figure 3.** Cleaned image diagnostics. *Top-left:* Moment-0 of the deconvolved cube. *Top-right:* Moment-1 velocity field (noisier than the intrinsic map in Figure 1). *Bottom-left:* Moment-2 dispersion map. *Bottom-right:* Cleaned integrated spectrum with Gaussian fit, FWHM = 302.0 ± 10.8 km/s.
+**Figure 3.** Cleaned image diagnostics. *Top-left:* Moment-0 of the deconvolved cube. *Top-right:* Moment-1 velocity field (noisier than the intrinsic map in Figure 1). *Bottom-left:* Moment-2 dispersion map. *Bottom-right:* Cleaned integrated spectrum with non-parametric FWHM = 331.1 km/s.
 
 ![UV amplitude vs uv-distance with Gaussian model overlay.](figs/uv_amplitude_fit.png)
 
-**Figure 4.** Binned visibility amplitudes (channel-averaged, real part) with the best-fit circular Gaussian model (red curve). θ<sub>maj</sub> = 0.815″ ± 0.128″, flux = 13.28 mJy.
+**Figure 4.** Binned visibility amplitudes (channel-averaged, real part) with the best-fit MCMC Gaussian model (red curve). θ<sub>maj</sub> = 0.889″ ± 0.035″.
+
+![MCMC posterior distributions and parameter correlations.](figs/corner_plot.png)
+
+**Figure 5.** Corner plot from the MCMC Gaussian UV model fit.  *Diagonal panels* show 1D posterior probability distributions for each free parameter with the median (solid line) and 16th/84th percentile bounds.  *Off-diagonal panels* show 2D contour plots revealing parameter correlations.  The six fitted parameters are: total flux density (*flux*, mJy), Gaussian width (*sigma*, arcsec), inclination (*incl*, deg), position angle (*PA*, deg), and source center offsets (*dx*, *dy*, arcsec).  The FWHM size reported in the summary table is derived as 2.355 × *sigma*.
 
 ---
 
@@ -94,36 +104,21 @@ The MS is imaged with CASA `tclean` (natural weighting, 1000 iterations). The FW
 
 | Quantity | Value | Notes |
 |---|---|---|
-| Intrinsic FWHM | 308 km/s | From DysmalPy model |
-| Measured FWHM | 302.0 ± 10.8 km/s | Gaussian fit to cleaned spectrum |
-| Measured SNR | 12.1 | Peak / rms of line-free channels |
-| UV fit size (θ<sub>maj</sub>) | 0.815″ ± 0.128″ | From `uvmodelfit` |
-| Measured size | 6.58 kpc | Angular diameter distance conversion |
-| Proxy mass | 1.39 × 10<sup>11</sup> M<sub>☉</sub> | FWHM² × *D* / *G* |
+| Intrinsic FWHM | 340.8 km/s | Non-parametric half-max from DysmalPy model |
+| Measured FWHM | 331.1 km/s | Non-parametric half-max from cleaned spectrum |
+| Measured SNR | 48.3 | Peak / rms of line-free channels |
+| UV fit size (θ<sub>maj</sub>) | 0.889″ ± 0.035″ | MCMC Gaussian fit to visibilities |
+| Measured size | 7.18 kpc | Angular diameter distance conversion |
+| Proxy mass | 1.91 × 10<sup>11</sup> M<sub>☉</sub> | FWHM² × *D* / *G* |
 | True baryonic mass | 4.17 × 10<sup>10</sup> M<sub>☉</sub> | Input parameter |
-| *f*<sub>eff</sub> | 0.299 | *M*<sub>bary</sub> / *M*<sub>proxy</sub> |
-
----
-
-## Comparison with 8 kpc Run
-
-The previous standalone-script pipeline used an 8 kpc disk (`archive/report.md`). Reducing the disk size to 3 kpc produces a more compact source that is less resolved by ALMA C43-2, yielding a smaller angular size, higher *f*<sub>eff</sub>, and a slightly different measured FWHM:
-
-| Metric | 8 kpc (`archive/report.md`) | 3 kpc (this demo) | Change |
-|---|---|---|---|
-| Intrinsic FWHM | 306 km/s | 308 km/s | +2 km/s |
-| Measured FWHM | 295.6 km/s | 302.0 km/s | +6 km/s |
-| SNR | 15.3 | 12.1 | -3.2 |
-| θ<sub>maj</sub> | 1.842″ | 0.815″ | -1.027″ |
-| Measured size | 14.9 kpc | 6.58 kpc | -8.3 kpc |
-| *f*<sub>eff</sub> | 0.138 | 0.299 | +0.161 |
+| *f*<sub>eff</sub> | 0.219 | *M*<sub>bary</sub> / *M*<sub>proxy</sub> |
 
 ---
 
 ## Package Structure
 
 ```
-mocks/
+GalMock-uv/
 ├── galmockuv/                  # Package
 │   ├── __init__.py             # Version + lazy imports
 │   ├── env.py                  # Environment detection
@@ -137,8 +132,9 @@ mocks/
 ├── galmockuv.py                # Entry point
 ├── demo/
 │   ├── config.toml             # Demo config
-│   ├── run_demo.py             # Demo script
-│   ├── generate_report_plots.py # Report figure generator
+│   ├── run_layer_a.py          # Layer A script (Python env)
+│   ├── run_layer_bc.py         # Layers B+C script (CASA env)
+│   ├── run_report_plots.py     # Report plots (any Python env)
 │   ├── demo_report.md          # This report
 │   └── output/z25_demo/        # Demo outputs
 └── archive/                    # Old standalone scripts

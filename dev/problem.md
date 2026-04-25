@@ -118,3 +118,13 @@ import after the sys.path setup.  For line profile fitting, we bypass
 - w_right**2)` which is 0/0 when `w_left == w_right`, producing NaN.  Always
 use asymmetric initial guesses (e.g., `w0*0.9` and `w0*1.1`) and set lower
 bounds `w_lower=0.1` to prevent the optimizer from reaching `w_left == w_right`.
+
+## CASA exec() namespace isolation
+
+CASA's `__evprop__` uses `exec(stmt)` to run `-c` commands.  Top-level imports
+in exec'd files (e.g., `import numpy as np`) are available at the module level
+but NOT inside functions defined in the same exec'd code.  CASA's IPython
+shell manages the namespace in a way that strips imported names from function
+closures.  Workarounds: (1) use wrapper scripts (`demo/run_report_plots.py`)
+that pre-import all deps and pass them via an explicit globals dict to a nested
+`exec()`, or (2) move all imports inside function bodies.

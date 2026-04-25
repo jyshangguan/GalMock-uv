@@ -136,7 +136,8 @@ See `demo/config.toml` for all parameters.  The `io.py` module has a
 | `simulate_alma(cube_path, config, output_dir)` | Layer B: simulate ALMA |
 | `measure_from_ms(ms_path, config, output_dir, metadata)` | Layer C: measure from MS |
 | `measure_from_imaged_cube(cube_path, config, output_dir, metadata)` | Layer C alt: measure from FITS |
-| `plot_summary(fits_path, output_dir, source_id, apply_mask=False, ...)` | 2x2 summary (m0, m1, m2, spectrum+fit) |
+| `plot_summary(fits_path, output_dir, source_id, apply_mask=False, ...)` | 2x2 summary (m0, m1, m2, spectrum+FWHM) |
+| `fwhm_half_max(vel, flux)` | Non-parametric FWHM via half-maximum width |
 | `plot_moment_maps(fits_path, output_dir, source_id, apply_mask=False, ...)` | Individual moment map figures |
 | `read_fits_cube(path)` | Read FITS cube → (data_3d, header, pixscale, extent) |
 | `get_velocity_axis(header, restfreq_ghz=None)` | Build km/s velocity axis from FITS header |

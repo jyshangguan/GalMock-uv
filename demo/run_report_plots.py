@@ -15,7 +15,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.colors import AsinhNorm
-import astropy.units as u
 from astropy.cosmology import FlatLambdaCDM
 from astropy.io import fits
 from scipy.optimize import curve_fit
@@ -30,7 +29,6 @@ meas = load_json(OUT, 'measurements.json')
 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
 z = meta['redshift']
-kpc_per_arcsec = cosmo.angular_diameter_distance(z).value * 1e3 * np.pi / (180 * 3600)
 
 line_fit_model = meas.get('line_fit_model', 'gaussian')
 
@@ -52,6 +50,9 @@ if line_fit_model != 'gaussian':
 
 def gaussian(x, amp, cen, sigma):
     return amp * np.exp(-0.5 * ((x - cen) / sigma)**2)
+
+
+from galmockuv.measure import fwhm_half_max
 
 
 def read_fits_cube(fits_path):
@@ -257,21 +258,6 @@ def compute_spectrum(data_3d, vel):
     return vel[idx], spec[idx]
 
 
-def fit_gaussian_spectrum(vel, spec):
-    """Fit a Gaussian to a spectrum. Returns (fwhm, fwhm_err, amp, cen, sigma)."""
-    ipeak = np.argmax(np.abs(spec))
-    try:
-        popt, pcov = curve_fit(gaussian, vel, spec,
-                               p0=[spec[ipeak], vel[ipeak], 100], maxfev=10000)
-        amp, cen, sigma = popt
-        sigma_err = np.sqrt(np.diag(pcov))[2]
-        fwhm = 2.355 * sigma
-        fwhm_err = 2.355 * sigma_err
-        return fwhm, fwhm_err, amp, cen, sigma
-    except RuntimeError:
-        return 0, 0, spec[ipeak], vel[ipeak], 100
-
-
 def plot_moment_panels(data_3d, vel, extent, title_prefix, out_path,
                        extra_panel_fn=None, apply_mask=False):
     """Generate a 2x2 summary figure: moment0, moment1, moment2, + extra panel.
@@ -348,66 +334,17 @@ fwhm_int = [0]  # mutable container for closure
 
 def intrinsic_spectrum_panel(ax):
     vel_s, spec_s = compute_spectrum(data_int, vel_int)
-    vel_fit = np.linspace(vel_s.min(), vel_s.max(), 500)
-    ipeak = np.argmax(np.abs(spec_s))
-    amp0 = float(spec_s[ipeak])
-    cen0 = float(vel_s[ipeak])
-
-    if line_fit_model == 'gaussian':
-        fwhm, fwhm_err, amp, cen, sigma = fit_gaussian_spectrum(vel_s, spec_s)
-        spec_fit = gaussian(vel_fit, amp, cen, sigma)
-        fit_label = 'Gaussian'
-    elif line_fit_model == 'doublepeak':
-        w0 = max(50.0, abs(vel_s[ipeak] - vel_s[0]) * 0.15)
-        try:
-            popt, pcov = curve_fit(_line_profile, vel_s, spec_s,
-                                   p0=[amp0, amp0*0.3, cen0, 80.0, w0],
-                                   maxfev=20000,
-                                   bounds=([0, 0, vel_s.min(), 1, 1],
-                                           [np.inf, np.inf, vel_s.max(), 500, 500]))
-            ag, ac, v0, sigma_f, w_f = popt
-            perr = np.sqrt(np.diag(pcov))
-            fwhm = 2.0 * w_f + 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_f
-            fwhm_err = np.sqrt(4 * perr[4]**2 + 8 * np.log(2.0) * perr[3]**2)
-            spec_fit = _line_profile(vel_fit, *popt)
-            fit_label = 'DoublePeak'
-        except RuntimeError:
-            fwhm, fwhm_err, _, _, sigma = fit_gaussian_spectrum(vel_s, spec_s)
-            spec_fit = gaussian(vel_fit, amp0, cen0, sigma)
-            fit_label = 'Gaussian (fallback)'
-    elif line_fit_model == 'doublepeak_asymmetric':
-        w0 = max(50.0, abs(vel_s[ipeak] - vel_s[0]) * 0.15)
-        try:
-            popt, pcov = curve_fit(_line_profile, vel_s, spec_s,
-                                   p0=[amp0, amp0*0.9, amp0*0.3, cen0,
-                                       80.0, w0*0.9, w0*1.1],
-                                   maxfev=20000,
-                                   bounds=([0, 0, 0, vel_s.min(), 1, 0.1, 0.1],
-                                           [np.inf, np.inf, np.inf, vel_s.max(), 500, 500, 500]))
-            ag_l, ag_r, ac, v0, sigma_f, wl_f, wr_f = popt
-            perr = np.sqrt(np.diag(pcov))
-            fwhm = (wl_f + wr_f) + 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_f
-            fwhm_err = np.sqrt(perr[5]**2 + perr[6]**2 + 8 * np.log(2.0) * perr[4]**2)
-            spec_fit = _line_profile(vel_fit, *popt)
-            fit_label = 'DoublePeak (asym)'
-        except RuntimeError:
-            fwhm, fwhm_err, _, _, sigma = fit_gaussian_spectrum(vel_s, spec_s)
-            spec_fit = gaussian(vel_fit, amp0, cen0, sigma)
-            fit_label = 'Gaussian (fallback)'
-
+    fwhm = fwhm_half_max(vel_s, spec_s)
     fwhm_int[0] = fwhm
 
-    ax.plot(vel_s, spec_s, 'k-', lw=1, label='Data')
-    ax.plot(vel_fit, spec_fit, 'r-', lw=2, label=fit_label)
-    ax.axvline(cen0, color='gray', ls=':', lw=1)
+    ax.plot(vel_s, spec_s, 'k-', lw=1)
     ax.text(0.05, 0.95,
-            '{} FWHM = {:.1f} km/s'.format(fit_label, fwhm),
+            'FWHM = {:.1f} km/s'.format(fwhm),
             transform=ax.transAxes, va='top',
             fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
     ax.set_xlabel('Velocity (km/s)')
     ax.set_ylabel('Flux')
     ax.set_title('Integrated Spectrum')
-    ax.legend()
 
 plot_moment_panels(data_int, vel_int, extent_int,
                     'Intrinsic Model \u2014 {}'.format(meta['source_id']),
@@ -420,57 +357,65 @@ print("  Intrinsic FWHM = {:.1f} km/s".format(fwhm_int[0]))
 # Figure 2: Visibility data (2-panel)
 # =========================================================================
 print("Generating visibility_data.png...")
-from casatools import ms as ms_tool
+try:
+    from casatools import ms as ms_tool
+    _has_casa = True
+except ImportError:
+    _has_casa = False
 
-ms_path = str(OUT / 'z25_demo.ms')
-mst = ms_tool()
-mst.open(ms_path)
-mst.selectinit(datadescid=0)
-chunk = mst.getdata(['u', 'v', 'data'])
-mst.close()
+if _has_casa:
+    ms_path = str(OUT / 'z25_demo.ms')
+    mst = ms_tool()
+    mst.open(ms_path)
+    mst.selectinit(datadescid=0)
+    chunk = mst.getdata(['u', 'v', 'data'])
+    mst.close()
 
-uu = np.array(chunk['u']).flatten()
-vv = np.array(chunk['v']).flatten()
-data_uv = np.array(chunk['data']).flatten()
+    uu = np.array(chunk['u']).flatten()
+    vv = np.array(chunk['v']).flatten()
+    data_uv = np.array(chunk['data']).flatten()
 
-freq_obs = meta['co_restfreq_ghz'] * 1e9 / (1 + z)
-lam = 2.99792458e8 / freq_obs
-uvdist = np.sqrt(uu**2 + vv**2) / lam / 1e3
-vis_real = np.real(data_uv)
+    freq_obs = meta['co_restfreq_ghz'] * 1e9 / (1 + z)
+    lam = 2.99792458e8 / freq_obs
+    uvdist = np.sqrt(uu**2 + vv**2) / lam / 1e3
+    vis_real = np.real(data_uv)
 
-np.random.seed(42)
-n_max = 50000
-sel = np.random.choice(len(uvdist), min(n_max, len(uvdist)), replace=False)
+    np.random.seed(42)
+    n_max = 50000
+    sel = np.random.choice(len(uvdist), min(n_max, len(uvdist)), replace=False)
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
 
-ax = axes[0]
-ax.scatter(uvdist[sel], vis_real[sel], s=0.3, alpha=0.3, c='k', rasterized=True)
-ax.set_xlabel(r'uv-distance (k$\lambda$)')
-ax.set_ylabel('Re(V) (Jy)')
-ax.set_title('Visibility Amplitude')
-ax.axhline(0, color='gray', ls='--', lw=0.5)
-ax.set_xlim(0, np.percentile(uvdist, 99))
-finite_vis = vis_real[np.isfinite(vis_real)]
-rng = np.nanpercentile(np.abs(finite_vis), [1, 99])
-ax.set_ylim(rng[0] * 1.2, rng[1] * 1.2)
+    ax = axes[0]
+    ax.scatter(uvdist[sel], vis_real[sel], s=0.3, alpha=0.3, c='k', rasterized=True)
+    ax.set_xlabel(r'uv-distance (k$\lambda$)')
+    ax.set_ylabel('Re(V) (Jy)')
+    ax.set_title('Visibility Amplitude')
+    ax.axhline(0, color='gray', ls='--', lw=0.5)
+    ax.set_xlim(0, np.percentile(uvdist, 99))
+    finite_vis = vis_real[np.isfinite(vis_real)]
+    rng = np.nanpercentile(np.abs(finite_vis), [1, 99])
+    ax.set_ylim(rng[0] * 1.2, rng[1] * 1.2)
 
-ax = axes[1]
-u_kl = uu / lam / 1e3
-v_kl = vv / lam / 1e3
-ax.scatter(u_kl[sel], v_kl[sel], s=0.3, alpha=0.3, c='k', rasterized=True)
-ax.set_xlabel(r'u (k$\lambda$)')
-ax.set_ylabel(r'v (k$\lambda$)')
-ax.set_title('uv Coverage')
-ax.set_aspect('equal')
-lim = np.percentile(np.abs(np.concatenate([u_kl, v_kl])), 99)
-ax.set_xlim(-lim, lim)
-ax.set_ylim(-lim, lim)
+    ax = axes[1]
+    u_kl = uu / lam / 1e3
+    v_kl = vv / lam / 1e3
+    ax.scatter(u_kl[sel], v_kl[sel], s=0.3, alpha=0.3, c='k', rasterized=True)
+    ax.set_xlabel(r'u (k$\lambda$)')
+    ax.set_ylabel(r'v (k$\lambda$)')
+    ax.set_title('uv Coverage')
+    ax.set_aspect('equal')
+    lim = np.percentile(np.abs(np.concatenate([u_kl, v_kl])), 99)
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
 
-plt.tight_layout()
-fig.savefig(FIGS / 'visibility_data.png', dpi=150, bbox_inches='tight')
-plt.close(fig)
-print("  Max uv-distance: {:.1f} klambda".format(uvdist.max()))
+    plt.tight_layout()
+    fig.savefig(FIGS / 'visibility_data.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print("  Max uv-distance: {:.1f} klambda".format(uvdist.max()))
+else:
+    uvdist = np.array([])
+    print("  Skipping visibility_data.png (CASA not available)")
 
 
 # =========================================================================
@@ -490,62 +435,65 @@ def cleaned_spectrum_panel(ax):
     amp0 = float(spec_s[ipeak])
     cen0 = float(vel_s[ipeak])
 
+    spec_fit = None
+    fit_label = ''
+
     if line_fit_model == 'gaussian':
-        fwhm, fwhm_err, amp, cen, sigma = fit_gaussian_spectrum(vel_s, spec_s)
-        spec_fit = gaussian(vel_fit, amp, cen, sigma)
-        fit_label = 'Gaussian'
+        try:
+            popt, _ = curve_fit(gaussian, vel_s, spec_s,
+                                p0=[amp0, cen0, 50.0],
+                                maxfev=20000)
+            amp, cen, sigma = popt
+            spec_fit = gaussian(vel_fit, amp, cen, sigma)
+            fit_label = 'Gaussian'
+        except (RuntimeError, ValueError):
+            pass
     elif line_fit_model == 'doublepeak':
         w0 = max(50.0, abs(vel_s[ipeak] - vel_s[0]) * 0.15)
         try:
-            popt, pcov = curve_fit(_line_profile, vel_s, spec_s,
-                                   p0=[amp0, amp0*0.3, cen0, 80.0, w0],
-                                   maxfev=20000,
-                                   bounds=([0, 0, vel_s.min(), 1, 1],
-                                           [np.inf, np.inf, vel_s.max(), 500, 500]))
-            ag, ac, v0, sigma_f, w_f = popt
-            perr = np.sqrt(np.diag(pcov))
-            fwhm = 2.0 * w_f + 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_f
-            fwhm_err = np.sqrt(4 * perr[4]**2 + 8 * np.log(2.0) * perr[3]**2)
+            popt, _ = curve_fit(_line_profile, vel_s, spec_s,
+                                p0=[amp0, amp0*0.3, cen0, 80.0, w0],
+                                maxfev=20000,
+                                bounds=([0, 0, vel_s.min(), 1, 1],
+                                        [np.inf, np.inf, vel_s.max(), 500, 500]))
             spec_fit = _line_profile(vel_fit, *popt)
             fit_label = 'DoublePeak'
-        except RuntimeError:
-            fwhm, fwhm_err, _, _, sigma = fit_gaussian_spectrum(vel_s, spec_s)
-            spec_fit = gaussian(vel_fit, amp0, cen0, sigma)
-            fit_label = 'Gaussian (fallback)'
+        except (RuntimeError, ValueError):
+            pass
     elif line_fit_model == 'doublepeak_asymmetric':
         w0 = max(50.0, abs(vel_s[ipeak] - vel_s[0]) * 0.15)
         try:
-            popt, pcov = curve_fit(_line_profile, vel_s, spec_s,
-                                   p0=[amp0, amp0*0.9, amp0*0.3, cen0,
-                                       80.0, w0*0.9, w0*1.1],
-                                   maxfev=20000,
-                                   bounds=([0, 0, 0, vel_s.min(), 1, 0.1, 0.1],
-                                           [np.inf, np.inf, np.inf, vel_s.max(), 500, 500, 500]))
-            ag_l, ag_r, ac, v0, sigma_f, wl_f, wr_f = popt
-            perr = np.sqrt(np.diag(pcov))
-            fwhm = (wl_f + wr_f) + 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_f
-            fwhm_err = np.sqrt(perr[5]**2 + perr[6]**2 + 8 * np.log(2.0) * perr[4]**2)
+            popt, _ = curve_fit(_line_profile, vel_s, spec_s,
+                                p0=[amp0, amp0*0.9, amp0*0.3, cen0,
+                                    80.0, w0*0.9, w0*1.1],
+                                maxfev=20000,
+                                bounds=([0, 0, 0, vel_s.min(), 1, 0.1, 0.1],
+                                        [np.inf, np.inf, np.inf, vel_s.max(), 500, 500, 500]))
             spec_fit = _line_profile(vel_fit, *popt)
             fit_label = 'DoublePeak (asym)'
-        except RuntimeError:
-            fwhm, fwhm_err, _, _, sigma = fit_gaussian_spectrum(vel_s, spec_s)
-            spec_fit = gaussian(vel_fit, amp0, cen0, sigma)
-            fit_label = 'Gaussian (fallback)'
+        except (RuntimeError, ValueError):
+            pass
+
+    if spec_fit is not None:
+        fwhm = fwhm_half_max(vel_fit, spec_fit)
+        ax.plot(vel_s, spec_s, 'k-', lw=1, label='Data')
+        ax.plot(vel_fit, spec_fit, 'r-', lw=2, label=fit_label)
+        ax.legend()
+    else:
+        fwhm = fwhm_half_max(vel_s, spec_s)
+        ax.plot(vel_s, spec_s, 'k-', lw=1)
 
     fwhm_clean[0] = fwhm
-    fwhm_err_clean[0] = fwhm_err
+    fwhm_err_clean[0] = 0.0
 
-    ax.plot(vel_s, spec_s, 'k-', lw=1, label='Data')
-    ax.plot(vel_fit, spec_fit, 'r-', lw=2, label=fit_label)
     ax.axvline(cen0, color='gray', ls=':', lw=1)
     ax.text(0.05, 0.95,
-            '{} FWHM = {:.1f} $\\pm$ {:.1f} km/s'.format(fit_label, fwhm, fwhm_err),
+            'FWHM = {:.1f} km/s'.format(fwhm),
             transform=ax.transAxes, va='top',
             fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
     ax.set_xlabel('Velocity (km/s)')
     ax.set_ylabel('Flux')
     ax.set_title('Cleaned Spectrum')
-    ax.legend()
     ax.axhline(0, color='gray', ls='--', lw=0.5)
 
 plot_moment_panels(data_clean, vel_clean, extent_clean,
@@ -562,162 +510,159 @@ print("  Cleaned FWHM = {:.1f} km/s".format(fwhm_clean[0]))
 print("Generating uv_amplitude_fit.png...")
 
 uv_fit_method = meas.get('uv_fit_method', 'uvmodelfit')
-avg_ms = str(OUT / 'avg.ms')
+max_uvdist = float(uvdist.max()) if len(uvdist) > 0 else 0.0
 
-if uv_fit_method == 'mcmc':
-    # Load MCMC fit results from fit_results.fits
-    mcmc_fits_path = str(OUT / 'mcmc_fit' / 'fit_results.fits')
-    mcmc_hdul = fits.open(mcmc_fits_path)
-    mcmc_hdr = mcmc_hdul[0].header
-    data_ext = mcmc_hdul[1].data
-    model_ext = mcmc_hdul[2].data
-    samples_ext = mcmc_hdul[4].data
+if _has_casa:
+    avg_ms = str(OUT / 'avg.ms')
 
-    # UV coordinates and visibilities
-    u_data = np.array(data_ext['U'])
-    v_data = np.array(data_ext['V'])
-    vis_re = np.array(data_ext['RE'])
-    vis_im = np.array(data_ext['IM'])
-    weight = np.array(data_ext['WEIGHT'])
+    if uv_fit_method == 'mcmc':
+        mcmc_fits_path = str(OUT / 'mcmc_fit' / 'fit_results.fits')
+        mcmc_hdul = fits.open(mcmc_fits_path)
+        mcmc_hdr = mcmc_hdul[0].header
+        data_ext = mcmc_hdul[1].data
+        model_ext = mcmc_hdul[2].data
+        samples_ext = mcmc_hdul[4].data
 
-    lam = meta['co_restfreq_ghz'] * 1e9 / (1 + z) / 2.99792458e8
-    uvdist_data = np.sqrt(u_data**2 + v_data**2) / lam / 1e3  # kilo-lambda
-    amp_data = np.sqrt(vis_re**2 + vis_im**2) * 1e3  # mJy
+        u_data = np.array(data_ext['U'])
+        v_data = np.array(data_ext['V'])
+        vis_re = np.array(data_ext['RE'])
+        vis_im = np.array(data_ext['IM'])
+        weight = np.array(data_ext['WEIGHT'])
 
-    # Best-fit model visibilities
-    model_re = np.array(model_ext['RE'])
-    model_im = np.array(model_ext['IM'])
-    uvdist_model = np.sqrt(u_data**2 + v_data**2) / lam / 1e3
-    amp_model = np.sqrt(model_re**2 + model_im**2) * 1e3  # mJy
+        lam = meta['co_restfreq_ghz'] * 1e9 / (1 + z) / 2.99792458e8
+        uvdist_data = np.sqrt(u_data**2 + v_data**2) / lam / 1e3
+        amp_data = np.sqrt(vis_re**2 + vis_im**2) * 1e3
 
-    # Posterior uncertainty band from samples (~100 random draws)
-    n_samples = min(100, len(samples_ext))
-    idx_s = np.random.choice(len(samples_ext), size=n_samples, replace=False)
-    # Rebuild model for each sample using stored best-fit as template
-    # (samples only give parameters, not full visibilities — use the
-    # amplitude as a proxy for the uncertainty)
-    amp_mean = amp_model.mean()
+        model_re = np.array(model_ext['RE'])
+        model_im = np.array(model_ext['IM'])
+        uvdist_model = np.sqrt(u_data**2 + v_data**2) / lam / 1e3
+        amp_model = np.sqrt(model_re**2 + model_im**2) * 1e3
 
-    mcmc_hdul.close()
+        n_samples = min(100, len(samples_ext))
+        idx_s = np.random.choice(len(samples_ext), size=n_samples, replace=False)
+        amp_mean = amp_model.mean()
 
-    # Plot
-    fig, ax = plt.subplots(figsize=(10, 6))
+        mcmc_hdul.close()
 
-    # Scatter the raw data (subsample for clarity)
-    np.random.seed(42)
-    n_max = 30000
-    sel = np.random.choice(len(uvdist_data), min(n_max, len(uvdist_data)), replace=False)
-    ax.scatter(uvdist_data[sel], amp_data[sel], s=0.3, alpha=0.15, c='steelblue',
-               rasterized=True, label='Data')
+        fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Binned data (log-spaced bins)
-    from scipy.stats import binned_statistic
-    uv_bins = np.logspace(np.log10(uvdist_data.min() * 0.9),
-                          np.log10(uvdist_data.max() * 1.1), 20)
-    bin_means, _, _ = binned_statistic(uvdist_data, amp_data,
-                                        statistic='mean', bins=uv_bins)
-    bin_errs, _, _ = binned_statistic(uvdist_data, amp_data,
-                                       statistic='std', bins=uv_bins)
-    bin_centers = 0.5 * (uv_bins[:-1] + uv_bins[1:])
-    mask = np.isfinite(bin_means) & np.isfinite(bin_errs)
-    ax.errorbar(bin_centers[mask], bin_means[mask], yerr=bin_errs[mask],
-                fmt='o', color='k', ms=5, capsize=3, label='Binned data')
+        np.random.seed(42)
+        n_max = 30000
+        sel = np.random.choice(len(uvdist_data), min(n_max, len(uvdist_data)), replace=False)
+        ax.scatter(uvdist_data[sel], amp_data[sel], s=0.3, alpha=0.15, c='steelblue',
+                   rasterized=True, label='Data')
 
-    # Model curve (binned for smoothness)
-    model_means, _, _ = binned_statistic(uvdist_model, amp_model,
-                                          statistic='mean', bins=uv_bins)
-    ax.plot(bin_centers[mask], model_means[mask], 'r-', lw=2, label='MCMC model')
+        from scipy.stats import binned_statistic
+        uv_bins = np.logspace(np.log10(uvdist_data.min() * 0.9),
+                              np.log10(uvdist_data.max() * 1.1), 20)
+        bin_means, _, _ = binned_statistic(uvdist_data, amp_data,
+                                            statistic='mean', bins=uv_bins)
+        bin_errs, _, _ = binned_statistic(uvdist_data, amp_data,
+                                           statistic='std', bins=uv_bins)
+        bin_centers = 0.5 * (uv_bins[:-1] + uv_bins[1:])
+        mask = np.isfinite(bin_means) & np.isfinite(bin_errs)
+        ax.errorbar(bin_centers[mask], bin_means[mask], yerr=bin_errs[mask],
+                    fmt='o', color='k', ms=5, capsize=3, label='Binned data')
 
-    ax.set_xscale('log')
-    ax.set_xlabel(r'uv-distance (k$\lambda$)')
-    ax.set_ylabel('Amplitude (mJy)')
-    ax.set_title('UV Amplitude — {}'.format(meta['source_id']))
-    ax.legend(fontsize=10)
+        model_means, _, _ = binned_statistic(uvdist_model, amp_model,
+                                              statistic='mean', bins=uv_bins)
+        ax.plot(bin_centers[mask], model_means[mask], 'r-', lw=2, label='MCMC model')
 
-    # Annotation
-    chi2 = mcmc_hdr.get('REDCHI2', 0)
-    bic = mcmc_hdr.get('BIC', 0)
-    size_arcsec = meas.get('size_arcsec', 0)
-    size_err = meas.get('size_err_arcsec', 0)
-    size_method = meas.get('size_method', 'mcmc')
-    ax.text(0.97, 0.97,
-            f'FWHM = {size_arcsec:.3f}" $\\pm$ {size_err:.3f}"\n'
-            f'$\\chi^2_\\nu$ = {chi2:.3f}, BIC = {bic:.0f}\n'
-            f'({size_method})',
-            transform=ax.transAxes, va='top', ha='right', fontsize=11,
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+        ax.set_xscale('log')
+        ax.set_xlabel(r'uv-distance (k$\lambda$)')
+        ax.set_ylabel('Amplitude (mJy)')
+        ax.set_title('UV Amplitude — {}'.format(meta['source_id']))
+        ax.legend(fontsize=10)
 
-    plt.tight_layout()
-    fig.savefig(FIGS / 'uv_amplitude_fit.png', dpi=150, bbox_inches='tight')
-    plt.close(fig)
+        chi2 = mcmc_hdr.get('REDCHI2', 0)
+        bic = mcmc_hdr.get('BIC', 0)
+        size_arcsec = meas.get('size_arcsec', 0)
+        size_err = meas.get('size_err_arcsec', 0)
+        size_method = meas.get('size_method', 'mcmc')
+        ax.text(0.97, 0.97,
+                f'FWHM = {size_arcsec:.3f}" $\\pm$ {size_err:.3f}"\n'
+                f'$\\chi^2_\\nu$ = {chi2:.3f}, BIC = {bic:.0f}\n'
+                f'({size_method})',
+                transform=ax.transAxes, va='top', ha='right', fontsize=11,
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
 
-    print(f"  MCMC size = {size_arcsec:.3f}\" ± {size_err:.3f}\" (FWHM)")
+        plt.tight_layout()
+        fig.savefig(FIGS / 'uv_amplitude_fit.png', dpi=150, bbox_inches='tight')
+        plt.close(fig)
 
-    # report_data from MCMC
-    report_data = {
-        'intrinsic_fwhm_kms': float(fwhm_int[0]),
-        'cleaned_fwhm_kms': float(fwhm_clean[0]),
-        'cleaned_fwhm_err_kms': float(fwhm_err_clean[0]),
-        'uv_bmaj_arcsec': float(size_arcsec),
-        'uv_bmaj_err_arcsec': float(size_err),
-        'uv_flux_mjy': 0.0,  # not directly available from MCMC
-        'max_uvdist_klambda': float(uvdist.max()),
-        'measured_snr': float(meas['line_snr']),
-        'measured_size_kpc': float(meas['size_kpc']),
-        'measured_f_eff': float(meas['f_eff']),
-    }
+        print(f"  MCMC size = {size_arcsec:.3f}\" ± {size_err:.3f}\" (FWHM)")
 
+        report_data = {
+            'intrinsic_fwhm_kms': float(fwhm_int[0]),
+            'cleaned_fwhm_kms': float(fwhm_clean[0]),
+            'cleaned_fwhm_err_kms': float(fwhm_err_clean[0]),
+            'uv_bmaj_arcsec': float(size_arcsec),
+            'uv_bmaj_err_arcsec': float(size_err),
+            'uv_flux_mjy': 0.0,
+            'max_uvdist_klambda': max_uvdist,
+            'measured_snr': float(meas['line_snr']),
+            'measured_size_kpc': float(meas['size_kpc']),
+            'measured_f_eff': float(meas['f_eff']),
+        }
+
+    else:
+        from galmockuv.casa_utils import plot_uvbins, fit_uv_model
+
+        fit_result = plot_uvbins(
+            vis=avg_ms,
+            datacolumn='data',
+            avg_axis='real',
+            uvbin_params={'n_bins': 15, 'binning_type': 'log'},
+            plotfile=str(FIGS / 'uv_amplitude_fit.png'),
+            target_name=meta['source_id'],
+            fit_results=None,
+            verbose=False,
+        )
+
+        uv_info_result = fit_uv_model(
+            vis=avg_ms,
+            comptype='G',
+            sourcepar=[0.2, 0., 0., 0.3, 1.0, 0.],
+            varpar=[0, 3],
+            outfile=str(OUT / 'uvfit_report.cl'),
+            uvbin_params={'n_bins': 15, 'binning_type': 'log'},
+            datacolumn='data',
+            avg_axis='real',
+            verbose=False,
+        )
+
+        fit_result_with_model = plot_uvbins(
+            vis=avg_ms,
+            datacolumn='data',
+            avg_axis='real',
+            uvbin_params={'n_bins': 15, 'binning_type': 'log'},
+            plotfile=str(FIGS / 'uv_amplitude_fit.png'),
+            target_name=meta['source_id'],
+            fit_results=uv_info_result,
+            verbose=False,
+        )
+
+        print("  UV fit bmaj = {:.3f}\"".format(uv_info_result['size']['bmaj']['value']))
+
+        report_data = {
+            'intrinsic_fwhm_kms': float(fwhm_int[0]),
+            'cleaned_fwhm_kms': float(fwhm_clean[0]),
+            'cleaned_fwhm_err_kms': float(fwhm_err_clean[0]),
+            'uv_bmaj_arcsec': float(uv_info_result['size']['bmaj']['value']),
+            'uv_bmaj_err_arcsec': float(uv_info_result['size']['bmaj']['error']),
+            'uv_flux_mjy': float(uv_info_result['flux']['value'] * 1000),
+            'max_uvdist_klambda': max_uvdist,
+            'measured_snr': float(meas['line_snr']),
+            'measured_size_kpc': float(meas['size_kpc']),
+            'measured_f_eff': float(meas['f_eff']),
+        }
 else:
-    # uvmodelfit path (original behavior)
-    from galmockuv.casa_utils import plot_uvbins, fit_uv_model
-
-    fit_result = plot_uvbins(
-        vis=avg_ms,
-        datacolumn='data',
-        avg_axis='real',
-        uvbin_params={'n_bins': 15, 'binning_type': 'log'},
-        plotfile=str(FIGS / 'uv_amplitude_fit.png'),
-        target_name=meta['source_id'],
-        fit_results=None,
-        verbose=False,
-    )
-
-    uv_info_result = fit_uv_model(
-        vis=avg_ms,
-        comptype='G',
-        sourcepar=[0.2, 0., 0., 0.3, 1.0, 0.],
-        varpar=[0, 3],
-        outfile=str(OUT / 'uvfit_report.cl'),
-        uvbin_params={'n_bins': 15, 'binning_type': 'log'},
-        datacolumn='data',
-        avg_axis='real',
-        verbose=False,
-    )
-
-    fit_result_with_model = plot_uvbins(
-        vis=avg_ms,
-        datacolumn='data',
-        avg_axis='real',
-        uvbin_params={'n_bins': 15, 'binning_type': 'log'},
-        plotfile=str(FIGS / 'uv_amplitude_fit.png'),
-        target_name=meta['source_id'],
-        fit_results=uv_info_result,
-        verbose=False,
-    )
-
-    print("  UV fit bmaj = {:.3f}\"".format(uv_info_result['size']['bmaj']['value']))
-
+    print("  Skipping uv_amplitude_fit.png (CASA not available)")
     report_data = {
         'intrinsic_fwhm_kms': float(fwhm_int[0]),
         'cleaned_fwhm_kms': float(fwhm_clean[0]),
         'cleaned_fwhm_err_kms': float(fwhm_err_clean[0]),
-        'uv_bmaj_arcsec': float(uv_info_result['size']['bmaj']['value']),
-        'uv_bmaj_err_arcsec': float(uv_info_result['size']['bmaj']['error']),
-        'uv_flux_mjy': float(uv_info_result['flux']['value'] * 1000),
-        'max_uvdist_klambda': float(uvdist.max()),
-        'measured_snr': float(meas['line_snr']),
-        'measured_size_kpc': float(meas['size_kpc']),
-        'measured_f_eff': float(meas['f_eff']),
+        'max_uvdist_klambda': max_uvdist,
     }
 
 from galmockuv.io import save_json
